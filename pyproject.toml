@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dusty-colors"
+version = "0.1.0"
+description = "Analysis of dusty galaxy colors"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.3",
+    "scipy>=1.16",
+    "matplotlib>=3.10",
+    "astropy>=7.1",
+    "pandas>=2.3",
+    "jupyterlab>=4.4",
+    "black>=25.9",
+    "isort>=6.0",
+    "flake8>=7.0",
+    "pyarrow>=21.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 88

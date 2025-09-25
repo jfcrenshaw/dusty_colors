@@ -208,6 +208,7 @@ __marimo__/
 
 data/*
 figures/*
+results/*
 !**/.gitkeep
 
 **/.DS_Store
