@@ -3,6 +3,8 @@
 import numpy as np
 from astropy.table import Table, join
 
+from dusty_colors.utils import flux_to_mag
+
 # Load the raw catalog
 cat = Table.read("data/dp1_catalog_raw.fits")
 
@@ -41,6 +43,18 @@ for band in "ugrizy":
         if col.startswith(f"{band}_") and "Flux" in col and "Err" not in col:
             cat[col] = cat[col] * 10 ** (a_ebv * cat["ebv"] / 2.5)
 
+# Save mags for every flux
+for band in "ugrizy":
+    for col in list(cat.columns):
+        if col.startswith(f"{band}_") and "Flux" in col and "Err" not in col:
+            ftype = col[2:].replace("Flux", "")
+            mag, mag_err = flux_to_mag(cat, band, ftype=ftype)
+            cat[f"{band}_{ftype}Mag"] = mag
+            cat[f"{band}_{ftype}MagErr"] = mag_err
+
+# Save SNR for every band
+for band in "ugrizy":
+    cat[f"{band}_snr"] = cat[f"{band}_cModelFlux"] / cat[f"{band}_cModelFluxErr"]
 
 # Determine shear cuts, using Table 4 of https://arxiv.org/pdf/1705.06745
 e = np.sqrt(cat["i_hsmShapeRegauss_e1"] ** 2 + cat["i_hsmShapeRegauss_e2"] ** 2)

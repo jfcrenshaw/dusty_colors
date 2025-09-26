@@ -19,6 +19,7 @@ dependencies = [
     "black>=25.9",
     "isort>=6.0",
     "flake8>=7.0",
+    "mypy>=1.5",
     "pyarrow>=21.0",
 ]
 
@@ -27,3 +28,6 @@ where = ["src"]
 
 [tool.black]
 line-length = 88
+
+[tool.mypy]
+ignore_missing_imports = true
