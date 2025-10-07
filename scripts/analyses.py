@@ -12,6 +12,7 @@ variants = [
     ),
     stacker.SNRMax20(),
     stacker.SNRMax500(),
+    stacker.SNRMaxInf(),
     stacker.Default(
         name="ecdfs_only",
         selector=selector.EcdfsOnly(),
@@ -70,8 +71,8 @@ variants = [
     ),
     stacker.FreeFluxes(),
     stacker.NullGalaxiesFlip(),
-    stacker.NullStars(),
-    stacker.NullStarsFlip(),
+    # stacker.NullStars(),
+    # stacker.NullStarsFlip(),
     # stacker.BinByAngle(),
     # stacker.StackMags(),
 ]

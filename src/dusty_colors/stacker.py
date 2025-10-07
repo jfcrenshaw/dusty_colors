@@ -22,7 +22,6 @@ class Stacker:
     selector: Selector = field(default_factory=DefaultSelector)
 
     # Stacking options
-    stack_mags: bool = False  # Whether to stack in mags instead of fluxes
     free_fluxes: bool = False  # Whether to use "free" flux variants
     snr_max: float = 100  # Maximum SNR (sets error floor)
 
@@ -47,8 +46,16 @@ class Stacker:
         self.out_dir = Path(f"results/stacks/{self.name}")
         self.file_pairs = self.out_dir / "pairs.npz"
         self.file_stack_fluxes = self.out_dir / "stack_fluxes.npz"
-        self.file_stack_colors = self.out_dir / "stack_colors.npz"
+        self.file_stack_mags = self.out_dir / "stack_mags.npz"
+        self.file_stack_fcolors = self.out_dir / "stack_fcolors.npz"
+        self.file_stack_mcolors = self.out_dir / "stack_mcolors.npz"
         self.file_stack_shear = self.out_dir / "stack_shear.npz"
+
+        # Check for not-yet-implemented options
+        if not self.tomographic:
+            raise NotImplementedError("Non-tomographic selection not yet implemented.")
+        if self.fg_stars:
+            raise NotImplementedError("Using stars as foreground not yet implemented.")
 
     def find_pairs(self, force: bool = False) -> None:
         """Find foreground-background pairs."""
@@ -119,14 +126,14 @@ class Stacker:
         )
         print(f"{len(self._pairs)} found")
 
-    def _calc_binned_stats(self, sep, x, weights, bin_edges):
+    def _calc_binned_stats(self, sep, x, err, bin_edges):
         """Calculate binned statistics."""
         # Assign bins
         bin_indices = np.digitize(sep, bin_edges) - 1
         valid = (bin_indices >= 0) & (bin_indices < self.n_bins)
         bin_indices = bin_indices[valid]
         x = x[valid]
-        weights = weights[valid]
+        err = err[valid]
 
         # Calculate weighted average in each bin
         avgs = []
@@ -141,28 +148,19 @@ class Stacker:
                 errs.append(np.nan)
                 continue
 
+            # Calculate weights
+            xi = x[in_bin]
+            ei = err[in_bin]
+            wi = 1 / (ei**2 + xi.var())
+
             # Weighted average and error
-            avgs.append(np.average(x[in_bin], weights=weights[in_bin]))
-            var = (
-                x[in_bin].var()
-                * np.sum(weights[in_bin] ** 2)
-                / weights[in_bin].sum() ** 2
-            )
-            var += 1 / weights[in_bin].sum()
-            errs.append(np.sqrt(var))
+            avgs.append(np.average(xi, weights=wi))
+            errs.append(np.sum(wi**2 * (ei**2 + xi.var())) / wi.sum() ** 2)
 
         return np.array(avgs), np.array(errs)
 
-    def stack_fluxes(self, force: bool = False) -> None:
-        """Stack fluxes."""
-        # Skip time-intensive stacking if already done
-        if self.file_stack_fluxes.exists() and not force:
-            print("   fluxes already stacked")
-            return
-
-        # Otherwise, move forward with finding new pairs
-        print("   stacking fluxes...", end="", flush=True)
-
+    def _stack_flux_or_mag(self, flux: bool) -> dict:
+        """Perform stacking of either fluxes or magnitudes."""
         # Set bins
         bin_edges = np.linspace(self.r_min, self.r_max, self.n_bins + 1)
         bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
@@ -176,10 +174,10 @@ class Stacker:
 
             # Get columns
             col = f"{band}_{'free_' if self.free_fluxes else ''}cModel"
-            if self.stack_mags:
-                col += "Mag"
-            else:
+            if flux:
                 col += "Flux"
+            else:
+                col += "Mag"
             x = self._background[col].iloc[self._pairs[:, 1]]
             err = self._background[col + "Err"].iloc[self._pairs[:, 1]]
 
@@ -190,33 +188,50 @@ class Stacker:
             sep = self._separation[mask]
 
             # Apply SNR maximum
-            if self.stack_mags:
-                err = np.clip(err, 2.5 / np.log(10) * 1 / self.snr_max, None)
-            else:
+            if flux:
                 err = x * np.clip(err / x, 1 / self.snr_max, None)
-
-            # Calculate weights
-            weights = 1 / err**2
+            else:
+                err = np.clip(err, 2.5 / np.log(10) * 1 / self.snr_max, None)
 
             # Calculate binned stats
-            avgs, errs = self._calc_binned_stats(sep, x, weights, bin_edges)
+            avgs, errs = self._calc_binned_stats(sep, x, err, bin_edges)
             results[f"{band}_avg"] = np.array(avgs)
             results[f"{band}_err"] = np.array(errs)
+
+        return results
+
+    def stack_fluxes(self, force: bool = False) -> None:
+        """Stack fluxes."""
+        # Skip time-intensive stacking if already done
+        if self.file_stack_fluxes.exists() and not force:
+            print("   fluxes already stacked")
+            return
+
+        # Otherwise, move forward with finding new pairs
+        print("   stacking fluxes...", end="", flush=True)
+        results = self._stack_flux_or_mag(flux=True)
 
         # Save all results
         np.savez_compressed(self.file_stack_fluxes, **results)  # type: ignore
         print(".")
 
-    def stack_colors(self, force: bool = False) -> None:
-        """Stack colors."""
+    def stack_mags(self, force: bool = False) -> None:
+        """Stack magnitudes."""
         # Skip time-intensive stacking if already done
-        if self.file_stack_colors.exists() and not force:
-            print("   colors already stacked")
+        if self.file_stack_mags.exists() and not force:
+            print("   mags already stacked")
             return
 
         # Otherwise, move forward with finding new pairs
-        print("   stacking colors...", end="", flush=True)
+        print("   stacking mags...", end="", flush=True)
+        results = self._stack_flux_or_mag(flux=False)
 
+        # Save all results
+        np.savez_compressed(self.file_stack_mags, **results)  # type: ignore
+        print(".")
+
+    def _stack_colors(self, flux: bool) -> dict:
+        """Perform stacking of either flux ratios or color differences."""
         # Set bins
         bin_edges = np.linspace(self.r_min, self.r_max, self.n_bins + 1)
         bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
@@ -232,14 +247,18 @@ class Stacker:
             print(f" {band1}-{band2}", end="", flush=True)
 
             # Get columns
-            col1 = f"{band1}_cModel"
-            col2 = f"{band2}_cModel"
-            if self.stack_mags:
-                col1 += "Mag"
-                col2 += "Mag"
+            if self.free_fluxes:
+                col1 = f"{band1}_free_cModel"
+                col2 = f"{band2}_free_cModel"
             else:
+                col1 = f"{band1}_gaap1p0"
+                col2 = f"{band2}_gaap1p0"
+            if flux:
                 col1 += "Flux"
                 col2 += "Flux"
+            else:
+                col1 += "Mag"
+                col2 += "Mag"
             x1 = self._background[col1].iloc[self._pairs[:, 1]]
             err1 = self._background[col1 + "Err"].iloc[self._pairs[:, 1]]
             x2 = self._background[col2].iloc[self._pairs[:, 1]]
@@ -261,31 +280,56 @@ class Stacker:
             sep = self._separation[mask]
 
             # Apply SNR maximum
-            if self.stack_mags:
-                err1 = np.clip(err1, 2.5 / np.log(10) * 1 / self.snr_max, None)
-                err2 = np.clip(err2, 2.5 / np.log(10) * 1 / self.snr_max, None)
-            else:
+            if flux:
                 err1 = x1 * np.clip(err1 / x1, 1 / self.snr_max, None)
                 err2 = x2 * np.clip(err2 / x2, 1 / self.snr_max, None)
+            else:
+                err1 = np.clip(err1, 2.5 / np.log(10) * 1 / self.snr_max, None)
+                err2 = np.clip(err2, 2.5 / np.log(10) * 1 / self.snr_max, None)
 
             # Calculate color and error
-            if self.stack_mags:
-                x = x1 - x2
-                err = np.sqrt(err1**2 + err2**2)
-            else:
+            if flux:
                 x = x1 / x2
                 err = x * np.sqrt((err1 / x1) ** 2 + (err2 / x2) ** 2)
-
-            # Calculate weights
-            weights = 1 / err**2
+            else:
+                x = x1 - x2
+                err = np.sqrt(err1**2 + err2**2)
 
             # Calculate binned stats
-            avgs, errs = self._calc_binned_stats(sep, x, weights, bin_edges)
+            avgs, errs = self._calc_binned_stats(sep, x, err, bin_edges)
             results[f"{band1}-{band2}_avg"] = np.array(avgs)
             results[f"{band1}-{band2}_err"] = np.array(errs)
 
+        return results
+
+    def stack_fcolors(self, force: bool = False) -> None:
+        """Stack colors using flux ratios."""
+        # Skip time-intensive stacking if already done
+        if self.file_stack_fcolors.exists() and not force:
+            print("   flux-colors already stacked")
+            return
+
+        # Otherwise, move forward with finding new pairs
+        print("   stacking flux-colors...", end="", flush=True)
+        results = self._stack_colors(flux=True)
+
         # Save all results
-        np.savez_compressed(self.file_stack_colors, **results)  # type: ignore
+        np.savez_compressed(self.file_stack_fcolors, **results)  # type: ignore
+        print(".")
+
+    def stack_mcolors(self, force: bool = False) -> None:
+        """Stack colors using magnitude differences."""
+        # Skip time-intensive stacking if already done
+        if self.file_stack_mcolors.exists() and not force:
+            print("   magnitude-colors already stacked")
+            return
+
+        # Otherwise, move forward with finding new pairs
+        print("   stacking magnitude-colors...", end="", flush=True)
+        results = self._stack_colors(flux=False)
+
+        # Save all results
+        np.savez_compressed(self.file_stack_mcolors, **results)  # type: ignore
         print(".")
 
     def stack_shear(self, force: bool = False) -> None:
@@ -317,7 +361,8 @@ class Stacker:
         if (
             force_stacker
             or not self.file_stack_fluxes.exists()
-            # or not self.file_stack_colors.exists()
+            or not self.file_stack_fcolors.exists()
+            or not self.file_stack_mcolors.exists()
             # or not self.file_stack_shear.exists()
         ):
             print(f"Running stacking for variant: {self.name}")
@@ -331,11 +376,10 @@ class Stacker:
             # Run stacking
             self.find_pairs(force=force_stacker)
             self.stack_fluxes(force=force_stacker)
-            # self.stack_colors(force=force_stacker)
+            self.stack_mags(force=force_stacker)
+            self.stack_fcolors(force=force_stacker)
+            self.stack_mcolors(force=force_stacker)
             # self.stack_shear()
-            ...
-
-            # Create plots to visualize stacking
             ...
 
             print("   stacking complete")
@@ -363,15 +407,15 @@ class SNRMax500(Default):
 
 
 @dataclass
-class BinByAngle(Default):
-    name: str = "bin_by_angle"
-    bin_by_angle: bool = True
+class SNRMaxInf(Default):
+    name: str = "snr_max_inf"
+    snr_max: float = np.inf
 
 
 @dataclass
-class StackMags(Default):
-    name: str = "stack_mags"
-    stack_mags: bool = True
+class BinByAngle(Default):
+    name: str = "bin_by_angle"
+    bin_by_angle: bool = True
 
 
 @dataclass

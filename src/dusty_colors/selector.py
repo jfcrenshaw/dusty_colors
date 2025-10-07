@@ -224,6 +224,12 @@ class BrightMaskR100(Default):
 
 
 @dataclass
+class BrightMaskR200(Default):
+    name: str = "bright_mask_r200"
+    bright_radius: float = 200.0
+
+
+@dataclass
 class BlendCut100(Default):
     name: str = "blend_cut_100"
     blendedness_cut: float = 1.00
@@ -276,6 +282,7 @@ class FgLowZ(Default):
     fg_zmin: float = 0.1
     fg_zmax: float = 0.4
     bg_zmin: float = 0.5
+    bg_zmax: float = 1.5
 
 
 @dataclass
