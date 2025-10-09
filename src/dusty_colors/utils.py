@@ -1,7 +1,13 @@
-"""Utility functions for data processing."""
+"""Utilities for data processing."""
 
 import numpy as np
 import pandas as pd
+
+fields = {
+    "ECDFS": {"ra": 53.13, "dec": -28.10},
+    "EDFS": {"ra": 59.10, "dec": -48.73},
+    "Rubin SV 95 -25": {"ra": 95.00, "dec": -25.00},
+}
 
 
 def flux_to_mag(cat: pd.DataFrame, band: str, ftype: str = "cModel"):
@@ -21,5 +27,5 @@ def flux_to_mag(cat: pd.DataFrame, band: str, ftype: str = "cModel"):
 def select_ecdfs(cat: pd.DataFrame) -> pd.DataFrame:
     """Select only objects in the ECDFS region."""
     return cat.query(
-        "coord_ra > 52 and coord_ra < 54 and " "coord_dec > -29 and coord_dec < -27"
+        "coord_ra > 52 and coord_ra < 54 and coord_dec > -29 and coord_dec < -27"
     )

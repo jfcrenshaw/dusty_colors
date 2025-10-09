@@ -3,7 +3,7 @@
 import numpy as np
 from astropy.table import Table, join
 
-from dusty_colors.utils import flux_to_mag
+from dusty_colors.utils import fields, flux_to_mag
 
 # Load the raw catalog
 cat = Table.read("data/dp1_catalog_raw.fits")
@@ -80,6 +80,59 @@ i_snr = cat["i_cModelFlux"] / cat["i_cModelFluxErr"]
 shape_noise = 0.264 * (i_snr / 20) ** -0.891 * (R2 / 0.5) ** -1.015
 measurement_err = 0.4
 cat["shear_err"] = np.sqrt(shape_noise**2 + measurement_err**2)
+
+# Calculate pixelized depths in i band
+# ------------------------------------
+
+# First for individual galaxies...
+i5 = cat["i_cModelMag"] - 2.5 * np.log10(5 / i_snr)
+ra = cat["coord_ra"]
+dec = cat["coord_dec"]
+
+# Calculate 2D histogram of mean i5 values
+# First, digitize the coordinates to get bin indices
+# (-1 because digitize returns 1-based indices)
+n_bins = 2000
+ra_edges = np.linspace(ra.min(), ra.max(), n_bins + 1)
+dec_edges = np.linspace(dec.min(), dec.max(), n_bins + 1)
+ra_indices = np.digitize(ra, ra_edges) - 1
+dec_indices = np.digitize(dec, dec_edges) - 1
+
+# Clip indices to valid range (handle edge cases)
+ra_indices = np.clip(ra_indices, 0, n_bins - 1)
+dec_indices = np.clip(dec_indices, 0, n_bins - 1)
+
+# Create arrays to store sum and count for each bin
+bin_sum = np.zeros((n_bins, n_bins))
+bin_count = np.zeros((n_bins, n_bins))
+
+# Accumulate values in each bin
+np.add.at(bin_sum, (ra_indices, dec_indices), i5)
+np.add.at(bin_count, (ra_indices, dec_indices), 1)
+
+# Calculate mean, avoiding division by zero
+mean_i5_grid = np.divide(
+    bin_sum,
+    bin_count,
+    out=np.full_like(bin_sum, np.nan),
+    where=bin_count > 0,
+)
+
+# Assign mean i5 value to each galaxy based on its bin
+galaxy_mean_i5 = mean_i5_grid[ra_indices, dec_indices]
+
+# Save data
+cat["i5"] = i5
+cat["i5_pixel"] = galaxy_mean_i5
+
+# Save field names
+field = np.empty(len(cat), dtype="U15")
+for name in fields:
+    mask = (cat["coord_ra"] - fields[name]["ra"]) ** 2 + (
+        cat["coord_dec"] - fields[name]["dec"]
+    ) ** 2 < 2**2
+    field[mask] = name
+cat["field"] = field
 
 # Save the processed catalog
 cat.write("data/dp1_catalog_processed.parquet", overwrite=True)

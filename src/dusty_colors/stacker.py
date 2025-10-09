@@ -26,9 +26,9 @@ class Stacker:
     snr_max: float = 100  # Maximum SNR (sets error floor)
 
     # Defining bins
-    bin_by_angle: bool = False  # If false, bin by physical impact parameter
+    bin_by_angle: bool = True  # If false, bin by physical impact parameter
     r_min: float = 0.0  # Minimum radius (Mpc or arcmin)
-    r_max: float = 4.0  # Maximum radius (Mpc or arcmin)
+    r_max: float = 60.0  # Maximum radius (Mpc or arcmin)
     n_bins: int = 10  # Number of bins
 
     # Toggle tomographic selection
@@ -38,6 +38,10 @@ class Stacker:
     # For null tests
     fg_stars: bool = False  # Whether to use stars as foreground objects
     flip: bool = False  # Whether to flip foreground/background samples
+    randomize_positions: bool = False  # Whether to randomize positions
+
+    # How to calculate errors
+    bootstrap: bool = False  # If false, use analytic errors
 
     def __post_init__(self) -> None:
         """Post-init processing."""
@@ -71,14 +75,26 @@ class Stacker:
         # Otherwise, move forward with finding new pairs
         print("   finding pairs...", end=" ", flush=True)
 
-        # Flat-sky approximation
-        ra = self._foreground["coord_ra"]
-        dec = self._foreground["coord_dec"]
-        fg_xy = np.column_stack((ra * np.cos(np.deg2rad(dec)), dec))
+        if self.randomize_positions:
+            rng = np.random.default_rng(42)
+            # Foreground positions
+            R = np.sqrt(rng.uniform(size=len(self._foreground)))
+            theta = rng.uniform(0, 2 * np.pi, size=len(R))
+            fg_ra, fg_dec = R * np.cos(theta), R * np.sin(theta)
 
-        ra = self._background["coord_ra"]
-        dec = self._background["coord_dec"]
-        bg_xy = np.column_stack((ra * np.cos(np.deg2rad(dec)), dec))
+            # Background positions
+            R = np.sqrt(rng.uniform(size=len(self._background)))
+            theta = rng.uniform(0, 2 * np.pi, size=len(R))
+            bg_ra, bg_dec = R * np.cos(theta), R * np.sin(theta)
+        else:
+            fg_ra = self._foreground["coord_ra"]
+            fg_dec = self._foreground["coord_dec"]
+            bg_ra = self._background["coord_ra"]
+            bg_dec = self._background["coord_dec"]
+
+        # Flat-sky approximation
+        fg_xy = np.column_stack((fg_ra * np.cos(np.deg2rad(fg_dec)), fg_dec))
+        bg_xy = np.column_stack((bg_ra * np.cos(np.deg2rad(bg_dec)), bg_dec))
 
         # Build spatial KDTree on background
         bg_tree = cKDTree(bg_xy)
@@ -126,7 +142,13 @@ class Stacker:
         )
         print(f"{len(self._pairs)} found")
 
-    def _calc_binned_stats(self, sep, x, err, bin_edges):
+    def _calc_binned_stats(
+        self,
+        sep: np.ndarray,
+        x: np.ndarray,
+        err: np.ndarray,
+        bin_edges: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, float]:
         """Calculate binned statistics."""
         # Assign bins
         bin_indices = np.digitize(sep, bin_edges) - 1
@@ -154,10 +176,21 @@ class Stacker:
             wi = 1 / (ei**2 + xi.var())
 
             # Weighted average and error
-            avgs.append(np.average(xi, weights=wi))
-            errs.append(np.sum(wi**2 * (ei**2 + xi.var())) / wi.sum() ** 2)
+            if self.bootstrap:
+                rng = np.random.default_rng(42)
+                idx = rng.choice(len(xi), size=(100, len(xi)), replace=True)
+                samples = np.average(xi[idx], weights=wi[idx], axis=1)
+                avgs.append(samples.mean())
+                errs.append(samples.std())
+            else:
+                avgs.append(np.average(xi, weights=wi))
+                errs.append(np.sum(wi**2 * (ei**2 + xi.var())) / wi.sum() ** 2)
 
-        return np.array(avgs), np.array(errs)
+        # Calculate the monopole normalization
+        weights = 1 / (err**2 + x.var())
+        norm = np.average(x, weights=weights)
+
+        return np.array(avgs), np.array(errs), norm
 
     def _stack_flux_or_mag(self, flux: bool) -> dict:
         """Perform stacking of either fluxes or magnitudes."""
@@ -178,8 +211,8 @@ class Stacker:
                 col += "Flux"
             else:
                 col += "Mag"
-            x = self._background[col].iloc[self._pairs[:, 1]]
-            err = self._background[col + "Err"].iloc[self._pairs[:, 1]]
+            x = self._background[col].iloc[self._pairs[:, 1]].values
+            err = self._background[col + "Err"].iloc[self._pairs[:, 1]].values
 
             # Filtering
             mask = np.isfinite(x) & np.isfinite(err) & (err > 0)
@@ -194,9 +227,14 @@ class Stacker:
                 err = np.clip(err, 2.5 / np.log(10) * 1 / self.snr_max, None)
 
             # Calculate binned stats
-            avgs, errs = self._calc_binned_stats(sep, x, err, bin_edges)
-            results[f"{band}_avg"] = np.array(avgs)
-            results[f"{band}_err"] = np.array(errs)
+            avgs, errs, norm = self._calc_binned_stats(sep, x, err, bin_edges)
+            if flux:
+                avgs /= norm
+                errs /= norm
+            else:
+                avgs -= norm
+            results[f"{band}_avg"] = avgs
+            results[f"{band}_err"] = errs
 
         return results
 
@@ -259,10 +297,10 @@ class Stacker:
             else:
                 col1 += "Mag"
                 col2 += "Mag"
-            x1 = self._background[col1].iloc[self._pairs[:, 1]]
-            err1 = self._background[col1 + "Err"].iloc[self._pairs[:, 1]]
-            x2 = self._background[col2].iloc[self._pairs[:, 1]]
-            err2 = self._background[col2 + "Err"].iloc[self._pairs[:, 1]]
+            x1 = self._background[col1].iloc[self._pairs[:, 1]].values
+            err1 = self._background[col1 + "Err"].iloc[self._pairs[:, 1]].values
+            x2 = self._background[col2].iloc[self._pairs[:, 1]].values
+            err2 = self._background[col2 + "Err"].iloc[self._pairs[:, 1]].values
 
             # Filtering
             mask = (
@@ -296,9 +334,14 @@ class Stacker:
                 err = np.sqrt(err1**2 + err2**2)
 
             # Calculate binned stats
-            avgs, errs = self._calc_binned_stats(sep, x, err, bin_edges)
-            results[f"{band1}-{band2}_avg"] = np.array(avgs)
-            results[f"{band1}-{band2}_err"] = np.array(errs)
+            avgs, errs, norm = self._calc_binned_stats(sep, x, err, bin_edges)
+            if flux:
+                avgs /= norm
+                errs /= norm
+            else:
+                avgs -= norm
+            results[f"{band1}-{band2}_avg"] = avgs
+            results[f"{band1}-{band2}_err"] = errs
 
         return results
 
@@ -375,10 +418,13 @@ class Stacker:
 
             # Run stacking
             self.find_pairs(force=force_stacker)
+            if len(self._pairs) == 0:
+                print("   no pairs found, skipping stacking\n")
+                return
             self.stack_fluxes(force=force_stacker)
             self.stack_mags(force=force_stacker)
-            self.stack_fcolors(force=force_stacker)
-            self.stack_mcolors(force=force_stacker)
+            # self.stack_fcolors(force=force_stacker)
+            # self.stack_mcolors(force=force_stacker)
             # self.stack_shear()
             ...
 
@@ -413,9 +459,10 @@ class SNRMaxInf(Default):
 
 
 @dataclass
-class BinByAngle(Default):
-    name: str = "bin_by_angle"
+class BinByImpact(Default):
+    name: str = "bin_by_impact"
     bin_by_angle: bool = True
+    r_max: float = 60.0  # arcmin
 
 
 @dataclass
@@ -443,3 +490,9 @@ class NullStarsFlip(Default):
     name: str = "null_stars_flip"
     fg_stars: bool = True
     flip: bool = True
+
+
+@dataclass
+class RandPositions(Default):
+    name: str = "rand_positions"
+    randomize_positions: bool = True

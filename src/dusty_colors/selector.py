@@ -23,15 +23,20 @@ class Selector:
     # Only ECDFS? (which has deepest data and best photo-zs)
     only_ecdfs: bool = False
 
-    # Cuts on the raw catalog
+    # Cuts on faint end
+    i_cut: float = 25.0  # Maximum i-band magnitude
     min_snr_u: float = 5
     min_snr_g: float = 5
     min_snr_r: float = 5
     min_snr_i: float = 10
     min_snr_z: float = 5
     min_snr_y: float = 5
+
+    # Cuts on bright end
     bright_cut: float = 18.0  # Don't use objects brighter than this in i (mag)
     bright_radius: float = 0  # Radius around bright objects to mask (arcsec)
+
+    # Cuts on blendedness
     blendedness_cut: float = 0.42  # Maximum blendedness
 
     # Photo-z quality cuts
@@ -118,6 +123,13 @@ class Selector:
                 cat = select_ecdfs(cat)
                 print("   after ECDFS cut:", len(cat))
 
+            # Apply depth cut
+            # Need to determine minimum depth such that the i_cut
+            # matches the specified i-band SNR cut
+            i5_cut = self.i_cut + 2.5 * np.log10(self.min_snr_i / 5)
+            cat = cat.query(f"i5_pixel > {i5_cut}")
+            print("   after cutting shallow pixels:", len(cat))
+
             # Cut on SNR
             for band in ["u", "g", "r", "i", "z", "y"]:
                 cat = cat.query(f"{band}_snr > @self.min_snr_{band}")
@@ -200,6 +212,35 @@ Default = Selector
 
 # Other variants
 @dataclass
+class iCut24p0(Default):
+    name: str = "i_cut_24p0"
+    i_cut: float = 24.0
+
+
+@dataclass
+class iCut24p5(Default):
+    name: str = "i_cut_24p5"
+    i_cut: float = 24.5
+
+
+@dataclass
+class SNRi20(Default):
+    name: str = "snr_i_20"
+    min_snr_i: float = 20.0
+
+
+@dataclass
+class SNRConservative(Default):
+    name: str = "snr_conservative"
+    min_snr_u: float = 5.0
+    min_snr_g: float = 10.0
+    min_snr_r: float = 10.0
+    min_snr_i: float = 20.0
+    min_snr_z: float = 10.0
+    min_snr_y: float = 5.0
+
+
+@dataclass
 class BrightCut20(Default):
     name: str = "bright_cut_20"
     bright_cut: float = 20.0
@@ -242,20 +283,9 @@ class BlendCut10(Default):
 
 
 @dataclass
-class SNRi20(Default):
-    name: str = "snr_i_20"
-    min_snr_i: float = 20.0
-
-
-@dataclass
-class SNRConservative(Default):
-    name: str = "snr_conservative"
-    min_snr_u: float = 5.0
-    min_snr_g: float = 10.0
-    min_snr_r: float = 10.0
-    min_snr_i: float = 20.0
-    min_snr_z: float = 10.0
-    min_snr_y: float = 5.0
+class BlendCut01(Default):
+    name: str = "blend_cut_01"
+    blendedness_cut: float = 0.01
 
 
 @dataclass
@@ -268,24 +298,6 @@ class RedSeq(Default):
 class EcdfsOnly(Default):
     name: str = "ecdfs_only"
     only_ecdfs: bool = True
-
-
-@dataclass
-class FgLowZ(Default):
-    name: str = "fg_low_z"
-    fg_zmin: float = 0.1
-    fg_zmax: float = 0.4
-    bg_zmin: float = 0.5
-    bg_zmax: float = 1.5
-
-
-@dataclass
-class BgLowZ(Default):
-    name: str = "bg_low_z"
-    fg_zmin: float = 0.1
-    fg_zmax: float = 0.4
-    bg_zmin: float = 0.5
-    bg_zmax: float = 1.0
 
 
 @dataclass
@@ -311,3 +323,21 @@ class PZStrict(Default):
     name: str = "pz_strict"
     pz_max_sig: float = 0.1
     pz_max_diff: float = 0.1
+
+
+@dataclass
+class FgLowZ(Default):
+    name: str = "fg_low_z"
+    fg_zmin: float = 0.1
+    fg_zmax: float = 0.4
+    bg_zmin: float = 0.5
+    bg_zmax: float = 1.5
+
+
+@dataclass
+class BgLowZ(Default):
+    name: str = "bg_low_z"
+    fg_zmin: float = 0.1
+    fg_zmax: float = 0.4
+    bg_zmin: float = 0.5
+    bg_zmax: float = 1.0

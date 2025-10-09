@@ -3,23 +3,20 @@ from dusty_colors import selector, stacker
 variants = [
     stacker.Default(),
     stacker.Default(
-        name="snr_conservative",
-        selector=selector.SNRConservative(),
+        name="i_cut_24p0",
+        selector=selector.iCut24p0(),
+    ),
+    stacker.Default(
+        name="i_cut_24p5",
+        selector=selector.iCut24p5(),
     ),
     stacker.Default(
         name="snr_i_20",
         selector=selector.SNRi20(),
     ),
-    stacker.SNRMax20(),
-    stacker.SNRMax500(),
-    stacker.SNRMaxInf(),
     stacker.Default(
-        name="ecdfs_only",
-        selector=selector.EcdfsOnly(),
-    ),
-    stacker.Default(
-        name="red_sequence",
-        selector=selector.RedSeq(),
+        name="snr_conservative",
+        selector=selector.SNRConservative(),
     ),
     stacker.Default(
         name="bright_cut_20",
@@ -50,12 +47,16 @@ variants = [
         selector=selector.BlendCut10(),
     ),
     stacker.Default(
-        name="fg_lowz",
-        selector=selector.FgLowZ(),
+        name="blend_cut_01",
+        selector=selector.BlendCut01(),
     ),
     stacker.Default(
-        name="bg_lowz",
-        selector=selector.BgLowZ(),
+        name="red_sequence",
+        selector=selector.RedSeq(),
+    ),
+    stacker.Default(
+        name="pz_strict",
+        selector=selector.PZStrict(),
     ),
     stacker.Default(
         name="DzGap0p2",
@@ -66,15 +67,21 @@ variants = [
         selector=selector.DzGap0p3(),
     ),
     stacker.Default(
-        name="pz_strict",
-        selector=selector.PZStrict(),
+        name="fg_lowz",
+        selector=selector.FgLowZ(),
     ),
+    stacker.Default(
+        name="bg_lowz",
+        selector=selector.BgLowZ(),
+    ),
+    stacker.SNRMax20(),
+    stacker.SNRMax500(),
+    stacker.SNRMaxInf(),
     stacker.FreeFluxes(),
-    stacker.NullGalaxiesFlip(),
+    # stacker.NullGalaxiesFlip(),
     # stacker.NullStars(),
     # stacker.NullStarsFlip(),
-    # stacker.BinByAngle(),
-    # stacker.StackMags(),
+    stacker.RandPositions(),
 ]
 
 for variant in variants:
