@@ -8,7 +8,7 @@ import pandas as pd
 import yaml
 from astropy.coordinates import SkyCoord
 
-from .utils import select_ecdfs
+from .utils import clean_data, select_ecdfs
 
 
 @dataclass
@@ -24,7 +24,7 @@ class Selector:
     only_ecdfs: bool = False
 
     # Cuts on faint end
-    i_cut: float = 25.0  # Maximum i-band magnitude
+    i_cut: float = 24.0  # Maximum i-band magnitude
     min_snr_u: float = 5
     min_snr_g: float = 5
     min_snr_r: float = 5
@@ -63,6 +63,9 @@ class Selector:
         self.file_galaxies = self.out_dir / "galaxy_catalog.parquet"
         self.file_foreground = self.out_dir / "galaxy_catalog_foreground.parquet"
         self.file_background = self.out_dir / "galaxy_catalog_background.parquet"
+        self.file_background_cleaned = (
+            self.out_dir / "galaxy_catalog_background_cleaned.parquet"
+        )
         self.file_stars = self.out_dir / "star_catalog.parquet"
 
     def cut_photoz(self, cat: pd.DataFrame) -> pd.DataFrame:
@@ -194,10 +197,15 @@ class Selector:
                 bg_cat = bg_cat.query(self.red_seq_cut)
                 print("   background galaxies after red sequence:", len(bg_cat))
 
+            # Clean the background catalog
+            print("   cleaning the background...")
+            bg_cleaned = clean_data(bg_cat)
+
             # Save catalogs
             galaxies.to_parquet(self.file_galaxies)
             fg_cat.to_parquet(self.file_foreground)
             bg_cat.to_parquet(self.file_background)
+            bg_cleaned.to_parquet(self.file_background_cleaned)
             stars.to_parquet(self.file_stars)
 
             print("   selection complete")
@@ -212,15 +220,27 @@ Default = Selector
 
 # Other variants
 @dataclass
-class iCut24p0(Default):
-    name: str = "i_cut_24p0"
-    i_cut: float = 24.0
+class iCut23p0(Default):
+    name: str = "i_cut_23p0"
+    i_cut: float = 23.0
+
+
+@dataclass
+class iCut23p5(Default):
+    name: str = "i_cut_23p5"
+    i_cut: float = 23.5
 
 
 @dataclass
 class iCut24p5(Default):
     name: str = "i_cut_24p5"
     i_cut: float = 24.5
+
+
+@dataclass
+class iCut25p0(Default):
+    name: str = "i_cut_25p0"
+    i_cut: float = 25.0
 
 
 @dataclass

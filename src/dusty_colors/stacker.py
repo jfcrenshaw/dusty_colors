@@ -26,10 +26,13 @@ class Stacker:
     snr_max: float = 100  # Maximum SNR (sets error floor)
 
     # Defining bins
-    bin_by_angle: bool = True  # If false, bin by physical impact parameter
+    bin_by_angle: bool = False  # If false, bin by physical impact parameter
     r_min: float = 0.0  # Minimum radius (Mpc or arcmin)
-    r_max: float = 60.0  # Maximum radius (Mpc or arcmin)
-    n_bins: int = 10  # Number of bins
+    r_max: float = 4  # Maximum radius (Mpc or arcmin)
+    n_bins: int | dict = 20
+    # field(
+    #    default_factory=lambda: dict(u=40, g=40, r=20, i=10, z=10, y=10)
+    # )
 
     # Toggle tomographic selection
     tomographic: bool = True  # If false, use all pairs with z_bg > z_fg + dz_min
@@ -41,7 +44,7 @@ class Stacker:
     randomize_positions: bool = False  # Whether to randomize positions
 
     # How to calculate errors
-    bootstrap: bool = False  # If false, use analytic errors
+    bootstrap: bool = True  # If false, use analytic errors
 
     def __post_init__(self) -> None:
         """Post-init processing."""
@@ -60,6 +63,21 @@ class Stacker:
             raise NotImplementedError("Non-tomographic selection not yet implemented.")
         if self.fg_stars:
             raise NotImplementedError("Using stars as foreground not yet implemented.")
+
+    def _get_bins(self, band: str) -> np.ndarray:
+        """Get bin edges."""
+        if isinstance(self.n_bins, dict):
+            n_bins = self.n_bins[band]
+        else:
+            n_bins = self.n_bins
+        if self.bin_by_angle:
+            # Bins in arcmin
+            return np.linspace(self.r_min, self.r_max, n_bins + 1)
+        else:
+            # Bins in Mpc
+            r = np.sqrt(np.linspace(self.r_min**2, self.r_max**2, n_bins))
+            r = np.insert(r, 1, r[1] / 2)  # Add extra bin at small scales
+            return r
 
     def find_pairs(self, force: bool = False) -> None:
         """Find foreground-background pairs."""
@@ -148,11 +166,12 @@ class Stacker:
         x: np.ndarray,
         err: np.ndarray,
         bin_edges: np.ndarray,
-    ) -> tuple[np.ndarray, np.ndarray, float]:
+    ) -> tuple[np.ndarray, np.ndarray]:
         """Calculate binned statistics."""
         # Assign bins
+        n_bins = len(bin_edges) - 1
         bin_indices = np.digitize(sep, bin_edges) - 1
-        valid = (bin_indices >= 0) & (bin_indices < self.n_bins)
+        valid = (bin_indices >= 0) & (bin_indices < n_bins)
         bin_indices = bin_indices[valid]
         x = x[valid]
         err = err[valid]
@@ -160,7 +179,7 @@ class Stacker:
         # Calculate weighted average in each bin
         avgs = []
         errs = []
-        for i in range(self.n_bins):
+        for i in range(n_bins):
             # Find values in bin
             in_bin = bin_indices == i
 
@@ -186,24 +205,21 @@ class Stacker:
                 avgs.append(np.average(xi, weights=wi))
                 errs.append(np.sum(wi**2 * (ei**2 + xi.var())) / wi.sum() ** 2)
 
-        # Calculate the monopole normalization
-        weights = 1 / (err**2 + x.var())
-        norm = np.average(x, weights=weights)
-
-        return np.array(avgs), np.array(errs), norm
+        return np.array(avgs), np.array(errs)
 
     def _stack_flux_or_mag(self, flux: bool) -> dict:
         """Perform stacking of either fluxes or magnitudes."""
-        # Set bins
-        bin_edges = np.linspace(self.r_min, self.r_max, self.n_bins + 1)
-        bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
-
         # Container for results
-        results = {"bin_centers": bin_centers}
+        results = {}
 
         # Loop over bands
         for band in "ugrizy":
             print(f" {band}", end="", flush=True)
+
+            # Set bins
+            bin_edges = self._get_bins(band)
+            bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+            results[f"{band}_bin_centers"] = bin_centers
 
             # Get columns
             col = f"{band}_{'free_' if self.free_fluxes else ''}cModel"
@@ -227,12 +243,7 @@ class Stacker:
                 err = np.clip(err, 2.5 / np.log(10) * 1 / self.snr_max, None)
 
             # Calculate binned stats
-            avgs, errs, norm = self._calc_binned_stats(sep, x, err, bin_edges)
-            if flux:
-                avgs /= norm
-                errs /= norm
-            else:
-                avgs -= norm
+            avgs, errs = self._calc_binned_stats(sep, x, err, bin_edges)
             results[f"{band}_avg"] = avgs
             results[f"{band}_err"] = errs
 
@@ -270,12 +281,8 @@ class Stacker:
 
     def _stack_colors(self, flux: bool) -> dict:
         """Perform stacking of either flux ratios or color differences."""
-        # Set bins
-        bin_edges = np.linspace(self.r_min, self.r_max, self.n_bins + 1)
-        bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
-
         # Container for results
-        results = {"bin_centers": bin_centers}
+        results = {}
 
         # Loop over bands
         bands = list("ugrizy")
@@ -284,62 +291,57 @@ class Stacker:
             band2 = bands[i + 1]
             print(f" {band1}-{band2}", end="", flush=True)
 
-            # Get columns
-            if self.free_fluxes:
-                col1 = f"{band1}_free_cModel"
-                col2 = f"{band2}_free_cModel"
-            else:
-                col1 = f"{band1}_gaap1p0"
-                col2 = f"{band2}_gaap1p0"
+            # Set bins
+            bin_edges = self._get_bins(band1)
+            bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+            results[f"{band1}-{band2}_bin_centers"] = bin_centers
+
             if flux:
+                # Retrieve columns
+                if self.free_fluxes:
+                    col1 = f"{band1}_free_cModel"
+                    col2 = f"{band2}_free_cModel"
+                else:
+                    col1 = f"{band1}_gaap1p0"
+                    col2 = f"{band2}_gaap1p0"
                 col1 += "Flux"
                 col2 += "Flux"
-            else:
-                col1 += "Mag"
-                col2 += "Mag"
-            x1 = self._background[col1].iloc[self._pairs[:, 1]].values
-            err1 = self._background[col1 + "Err"].iloc[self._pairs[:, 1]].values
-            x2 = self._background[col2].iloc[self._pairs[:, 1]].values
-            err2 = self._background[col2 + "Err"].iloc[self._pairs[:, 1]].values
 
-            # Filtering
-            mask = (
-                np.isfinite(x1)
-                & np.isfinite(err1)
-                & (err1 > 0)
-                & np.isfinite(x2)
-                & np.isfinite(err2)
-                & (err2 > 0)
-            )
-            x1 = x1[mask]
-            err1 = err1[mask]
-            x2 = x2[mask]
-            err2 = err2[mask]
-            sep = self._separation[mask]
+                x1 = self._background[col1].iloc[self._pairs[:, 1]].values
+                err1 = self._background[col1 + "Err"].iloc[self._pairs[:, 1]].values
+                x2 = self._background[col2].iloc[self._pairs[:, 1]].values
+                err2 = self._background[col2 + "Err"].iloc[self._pairs[:, 1]].values
 
-            # Apply SNR maximum
-            if flux:
+                # Apply SNR maximum
                 err1 = x1 * np.clip(err1 / x1, 1 / self.snr_max, None)
                 err2 = x2 * np.clip(err2 / x2, 1 / self.snr_max, None)
-            else:
-                err1 = np.clip(err1, 2.5 / np.log(10) * 1 / self.snr_max, None)
-                err2 = np.clip(err2, 2.5 / np.log(10) * 1 / self.snr_max, None)
 
-            # Calculate color and error
-            if flux:
+                # Calculate color and error
                 x = x1 / x2
                 err = x * np.sqrt((err1 / x1) ** 2 + (err2 / x2) ** 2)
+
             else:
-                x = x1 - x2
-                err = np.sqrt(err1**2 + err2**2)
+                # Retrieve columns
+                x = self._background[f"{band1}-{band2}"].iloc[self._pairs[:, 1]].values
+                err = (
+                    self._background[f"{band1}-{band2}_Err"]
+                    .iloc[self._pairs[:, 1]]
+                    .values
+                )
+
+                # Apply SNR maximum
+                err = np.clip(
+                    err, np.sqrt(2) * 2.5 / np.log(10) * 1 / self.snr_max, None
+                )
+
+            # Filtering
+            mask = np.isfinite(x) & np.isfinite(err) & (err > 0)
+            x = x[mask]
+            err = err[mask]
+            sep = self._separation[mask]
 
             # Calculate binned stats
-            avgs, errs, norm = self._calc_binned_stats(sep, x, err, bin_edges)
-            if flux:
-                avgs /= norm
-                errs /= norm
-            else:
-                avgs -= norm
+            avgs, errs = self._calc_binned_stats(sep, x, err, bin_edges)
             results[f"{band1}-{band2}_avg"] = avgs
             results[f"{band1}-{band2}_err"] = errs
 
@@ -347,6 +349,11 @@ class Stacker:
 
     def stack_fcolors(self, force: bool = False) -> None:
         """Stack colors using flux ratios."""
+        # Don't stack flux colors if background is cleaned
+        if self._background_cleaned:
+            print("   skipping flux-color stacking (background data is cleaned)")
+            return
+
         # Skip time-intensive stacking if already done
         if self.file_stack_fcolors.exists() and not force:
             print("   flux-colors already stacked")
@@ -391,9 +398,16 @@ class Stacker:
             self._foreground = pd.read_parquet(
                 self.in_dir / "galaxy_catalog_foreground.parquet"
             )
-        self._background = pd.read_parquet(
-            self.in_dir / "galaxy_catalog_background.parquet"
-        )
+        if self.clean_background:
+            self._background = pd.read_parquet(
+                self.in_dir / "galaxy_catalog_background_cleaned.parquet"
+            )
+            self._background_cleaned = True
+        else:
+            self._background = pd.read_parquet(
+                self.in_dir / "galaxy_catalog_background.parquet"
+            )
+            self._background_cleaned = False
         if self.flip:
             self._foreground, self._background = self._background, self._foreground
 
@@ -423,8 +437,8 @@ class Stacker:
                 return
             self.stack_fluxes(force=force_stacker)
             self.stack_mags(force=force_stacker)
-            # self.stack_fcolors(force=force_stacker)
-            # self.stack_mcolors(force=force_stacker)
+            self.stack_fcolors(force=force_stacker)
+            self.stack_mcolors(force=force_stacker)
             # self.stack_shear()
             ...
 
@@ -440,6 +454,12 @@ Default = Stacker
 
 
 # Other variants
+@dataclass
+class UnCleaned(Default):
+    name: str = "uncleaned"
+    clean_background: bool = False
+
+
 @dataclass
 class SNRMax20(Default):
     name: str = "snr_max_20"

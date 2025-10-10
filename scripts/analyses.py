@@ -3,12 +3,20 @@ from dusty_colors import selector, stacker
 variants = [
     stacker.Default(),
     stacker.Default(
-        name="i_cut_24p0",
-        selector=selector.iCut24p0(),
+        name="i_cut_23p0",
+        selector=selector.iCut23p0(),
+    ),
+    stacker.Default(
+        name="i_cut_23p5",
+        selector=selector.iCut23p5(),
     ),
     stacker.Default(
         name="i_cut_24p5",
         selector=selector.iCut24p5(),
+    ),
+    stacker.Default(
+        name="i_cut_25p0",
+        selector=selector.iCut25p0(),
     ),
     stacker.Default(
         name="snr_i_20",
@@ -59,11 +67,11 @@ variants = [
         selector=selector.PZStrict(),
     ),
     stacker.Default(
-        name="DzGap0p2",
+        name="dz_gap_0p2",
         selector=selector.DzGap0p2(),
     ),
     stacker.Default(
-        name="DzGap0p3",
+        name="dz_gap_0p3",
         selector=selector.DzGap0p3(),
     ),
     stacker.Default(

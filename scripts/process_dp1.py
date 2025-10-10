@@ -134,5 +134,15 @@ for name in fields:
     field[mask] = name
 cat["field"] = field
 
+# Add columns for colors
+bands = "ugrizy"
+for i in range(len(bands) - 1):
+    band1 = bands[i]
+    band2 = bands[i + 1]
+    cat[f"{band1}-{band2}"] = cat[f"{band1}_gaap1p0Mag"] - cat[f"{band2}_gaap1p0Mag"]
+    cat[f"{band1}-{band2}_Err"] = np.sqrt(
+        cat[f"{band1}_gaap1p0MagErr"] ** 2 + cat[f"{band2}_gaap1p0MagErr"] ** 2
+    )
+
 # Save the processed catalog
 cat.write("data/dp1_catalog_processed.parquet", overwrite=True)
