@@ -49,6 +49,9 @@ class Stacker:
     # How to calculate errors
     bootstrap: bool = True  # If false, use analytic errors
 
+    # Plotting settings
+    r_norm: float = 3.0  # Radius (Mpc or arcmin) beyond which is used to normalize
+
     def __post_init__(self) -> None:
         """Post-init processing."""
         # Directories and files
@@ -86,29 +89,9 @@ class Stacker:
         if self.fg_stars:
             raise NotImplementedError("Using stars as foreground not yet implemented.")
 
-        # Set foreground and background samples
-        if self.fg_stars:
-            self._foreground: pd.DataFrame = pd.read_parquet(
-                self.in_dir / "star_catalog.parquet"
-            )
-        else:
-            self._foreground: pd.DataFrame = pd.read_parquet(
-                self.in_dir / "galaxy_catalog_foreground.parquet"
-            )
-        if self.clean_background:
-            self._background: pd.DataFrame = pd.read_parquet(
-                self.in_dir / "galaxy_catalog_background_cleaned.parquet"
-            )
-            self._background_cleaned = True
-        else:
-            self._background: pd.DataFrame = pd.read_parquet(
-                self.in_dir / "galaxy_catalog_background.parquet"
-            )
-            self._background_cleaned = False
-
         self._flipped = False
 
-    def save_config(self) -> None:
+    def _save_config(self) -> None:
         with open(self.file_config, "w") as file:
             config = asdict(self)
             config["selector"] = asdict(self.selector)
@@ -129,7 +112,7 @@ class Stacker:
             r = np.insert(r, 1, r[1] / 2)  # Add extra bin at small scales
             return r
 
-    def find_pairs(self, force: bool = False) -> None:
+    def _find_pairs(self, force: bool = False) -> None:
         """Find foreground-background pairs."""
         # Skip time-intensive pair finding if already done
         file = self.file_pairs_flipped if self._flipped else self.file_pairs
@@ -298,7 +281,7 @@ class Stacker:
 
         return results
 
-    def stack_fluxes(self, force: bool = False) -> None:
+    def _stack_fluxes(self, force: bool = False) -> None:
         """Stack fluxes."""
         # Skip time-intensive stacking if already done
         file = (
@@ -318,7 +301,7 @@ class Stacker:
 
         self._new_flux_stack = True
 
-    def stack_mags(self, force: bool = False) -> None:
+    def _stack_mags(self, force: bool = False) -> None:
         """Stack magnitudes."""
         # Skip time-intensive stacking if already done
         file = self.file_stack_mags_flipped if self._flipped else self.file_stack_mags
@@ -404,7 +387,7 @@ class Stacker:
 
         return results
 
-    def stack_fcolors(self, force: bool = False) -> None:
+    def _stack_fcolors(self, force: bool = False) -> None:
         """Stack colors using flux ratios."""
         # Don't stack flux colors if background is cleaned
         if self._background_cleaned:
@@ -431,7 +414,7 @@ class Stacker:
 
         self._new_fcolors_stack = True
 
-    def stack_mcolors(self, force: bool = False) -> None:
+    def _stack_mcolors(self, force: bool = False) -> None:
         """Stack colors using magnitude differences."""
         # Skip time-intensive stacking if already done
         file = (
@@ -453,11 +436,11 @@ class Stacker:
 
         self._new_mcolors_stack = True
 
-    def stack_shear(self, force: bool = False) -> None:
+    def _stack_shear(self, force: bool = False) -> None:
         """Stack shear."""
         raise NotImplementedError("Shear stacking not yet implemented.")
 
-    def create_figure(self, stack_type: str, force: bool = False) -> None:
+    def _create_figure(self, stack_type: str, force: bool = False) -> None:
         """Create figure for given stack type."""
         if stack_type == "fluxes":
             if (
@@ -502,21 +485,21 @@ class Stacker:
         else:
             raise ValueError(f"Unknown stack type: {stack_type}")
 
-        fig = plot_stack(self.out_dir, stack_type=stack_type)
+        fig = plot_stack(self.out_dir, stack_type=stack_type, r_norm=self.r_norm)
         fig.savefig(fig_file, bbox_inches="tight")
         print(f"   saved figure to {fig_file}")
 
     def _run_stacking(self, force_stacker: bool = False) -> None:
-        self.save_config()
-        self.find_pairs(force=force_stacker)
+        self._save_config()
+        self._find_pairs(force=force_stacker)
         if len(self._pairs) == 0:
             print("   no pairs found, skipping stacking")
             return
-        self.stack_fluxes(force=force_stacker)
-        self.stack_mags(force=force_stacker)
-        self.stack_fcolors(force=force_stacker)
-        self.stack_mcolors(force=force_stacker)
-        # self.stack_shear()
+        self._stack_fluxes(force=force_stacker)
+        self._stack_mags(force=force_stacker)
+        self._stack_fcolors(force=force_stacker)
+        self._stack_mcolors(force=force_stacker)
+        # self._stack_shear()
 
         print("   stacking complete")
 
@@ -528,6 +511,26 @@ class Stacker:
     ) -> None:
         # Run selector
         self.selector.run(force=force_selector)
+
+        # Set foreground and background samples
+        if self.fg_stars:
+            self._foreground: pd.DataFrame = pd.read_parquet(
+                self.in_dir / "star_catalog.parquet"
+            )
+        else:
+            self._foreground: pd.DataFrame = pd.read_parquet(
+                self.in_dir / "galaxy_catalog_foreground.parquet"
+            )
+        if self.clean_background:
+            self._background: pd.DataFrame = pd.read_parquet(
+                self.in_dir / "galaxy_catalog_background_cleaned.parquet"
+            )
+            self._background_cleaned = True
+        else:
+            self._background: pd.DataFrame = pd.read_parquet(
+                self.in_dir / "galaxy_catalog_background.parquet"
+            )
+            self._background_cleaned = False
 
         # Create output directory
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -594,11 +597,11 @@ class Stacker:
             # or not self.file_stack_shear_fig.exists()
         ):
             print("Creating figures for variant:", self.name)
-            self.create_figure("fluxes", force=force_plotter)
-            self.create_figure("mags", force=force_plotter)
-            self.create_figure("fcolors", force=force_plotter)
-            self.create_figure("mcolors", force=force_plotter)
-            # self.create_figure("shear", force=force_plotter)
+            self._create_figure("fluxes", force=force_plotter)
+            self._create_figure("mags", force=force_plotter)
+            self._create_figure("fcolors", force=force_plotter)
+            self._create_figure("mcolors", force=force_plotter)
+            # self._create_figure("shear", force=force_plotter)
         else:
             print("Figures already exist for variant:", self.name)
 
