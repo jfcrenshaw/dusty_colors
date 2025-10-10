@@ -11,6 +11,7 @@ from scipy.spatial import cKDTree
 
 from .selector import Default as DefaultSelector
 from .selector import Selector
+from .utils import plot_stack
 
 
 @dataclass
@@ -21,6 +22,9 @@ class Stacker:
 
     selector: Selector = field(default_factory=DefaultSelector)
 
+    # Clean background?
+    clean_background: bool = True
+
     # Stacking options
     free_fluxes: bool = False  # Whether to use "free" flux variants
     snr_max: float = 100  # Maximum SNR (sets error floor)
@@ -29,7 +33,7 @@ class Stacker:
     bin_by_angle: bool = False  # If false, bin by physical impact parameter
     r_min: float = 0.0  # Minimum radius (Mpc or arcmin)
     r_max: float = 4  # Maximum radius (Mpc or arcmin)
-    n_bins: int | dict = 20
+    n_bins: int | dict = 10
     # field(
     #    default_factory=lambda: dict(u=40, g=40, r=20, i=10, z=10, y=10)
     # )
@@ -40,7 +44,6 @@ class Stacker:
 
     # For null tests
     fg_stars: bool = False  # Whether to use stars as foreground objects
-    flip: bool = False  # Whether to flip foreground/background samples
     randomize_positions: bool = False  # Whether to randomize positions
 
     # How to calculate errors
@@ -51,18 +54,65 @@ class Stacker:
         # Directories and files
         self.in_dir = Path(f"results/catalogs/{self.selector.name}")
         self.out_dir = Path(f"results/stacks/{self.name}")
+
+        self.file_config = self.out_dir / "config_stacker.yaml"
+
         self.file_pairs = self.out_dir / "pairs.npz"
+        self.file_pairs_flipped = self.out_dir / "pairs_flipped.npz"
+
         self.file_stack_fluxes = self.out_dir / "stack_fluxes.npz"
+        self.file_stack_fluxes_flipped = self.out_dir / "stack_fluxes_flipped.npz"
+        self.file_stack_fluxes_fig = self.out_dir / "fig_flux_stack.pdf"
+
         self.file_stack_mags = self.out_dir / "stack_mags.npz"
+        self.file_stack_mags_flipped = self.out_dir / "stack_mags_flipped.npz"
+        self.file_stack_mags_fig = self.out_dir / "fig_mag_stack.pdf"
+
         self.file_stack_fcolors = self.out_dir / "stack_fcolors.npz"
+        self.file_stack_fcolors_flipped = self.out_dir / "stack_fcolors_flipped.npz"
+        self.file_stack_fcolors_fig = self.out_dir / "fig_fcolors_stack.pdf"
+
         self.file_stack_mcolors = self.out_dir / "stack_mcolors.npz"
+        self.file_stack_mcolors_flipped = self.out_dir / "stack_mcolors_flipped.npz"
+        self.file_stack_mcolors_fig = self.out_dir / "fig_mcolors_stack.pdf"
+
         self.file_stack_shear = self.out_dir / "stack_shear.npz"
+        self.file_stack_shear_flipped = self.out_dir / "stack_shear_flipped.npz"
+        self.file_stack_shear_fig = self.out_dir / "fig_shear_stack.pdf"
 
         # Check for not-yet-implemented options
         if not self.tomographic:
             raise NotImplementedError("Non-tomographic selection not yet implemented.")
         if self.fg_stars:
             raise NotImplementedError("Using stars as foreground not yet implemented.")
+
+        # Set foreground and background samples
+        if self.fg_stars:
+            self._foreground: pd.DataFrame = pd.read_parquet(
+                self.in_dir / "star_catalog.parquet"
+            )
+        else:
+            self._foreground: pd.DataFrame = pd.read_parquet(
+                self.in_dir / "galaxy_catalog_foreground.parquet"
+            )
+        if self.clean_background:
+            self._background: pd.DataFrame = pd.read_parquet(
+                self.in_dir / "galaxy_catalog_background_cleaned.parquet"
+            )
+            self._background_cleaned = True
+        else:
+            self._background: pd.DataFrame = pd.read_parquet(
+                self.in_dir / "galaxy_catalog_background.parquet"
+            )
+            self._background_cleaned = False
+
+        self._flipped = False
+
+    def save_config(self) -> None:
+        with open(self.file_config, "w") as file:
+            config = asdict(self)
+            config["selector"] = asdict(self.selector)
+            yaml.dump(config, file, sort_keys=False)
 
     def _get_bins(self, band: str) -> np.ndarray:
         """Get bin edges."""
@@ -82,7 +132,8 @@ class Stacker:
     def find_pairs(self, force: bool = False) -> None:
         """Find foreground-background pairs."""
         # Skip time-intensive pair finding if already done
-        if self.file_pairs.exists() and not force:
+        file = self.file_pairs_flipped if self._flipped else self.file_pairs
+        if file.exists() and not force:
             print(f"   pairs already found, loading from {self.file_pairs}")
             data = np.load(self.file_pairs)
             self._pairs = data["pairs"]
@@ -155,9 +206,7 @@ class Stacker:
         # Save results
         self._pairs = np.array(pairs)
         self._separation = np.array(separation)
-        np.savez_compressed(
-            self.file_pairs, pairs=self._pairs, separation=self._separation
-        )
+        np.savez_compressed(file, pairs=self._pairs, separation=self._separation)
         print(f"{len(self._pairs)} found")
 
     def _calc_binned_stats(
@@ -252,7 +301,10 @@ class Stacker:
     def stack_fluxes(self, force: bool = False) -> None:
         """Stack fluxes."""
         # Skip time-intensive stacking if already done
-        if self.file_stack_fluxes.exists() and not force:
+        file = (
+            self.file_stack_fluxes_flipped if self._flipped else self.file_stack_fluxes
+        )
+        if file.exists() and not force:
             print("   fluxes already stacked")
             return
 
@@ -261,13 +313,16 @@ class Stacker:
         results = self._stack_flux_or_mag(flux=True)
 
         # Save all results
-        np.savez_compressed(self.file_stack_fluxes, **results)  # type: ignore
+        np.savez_compressed(file, **results)  # type: ignore
         print(".")
+
+        self._new_flux_stack = True
 
     def stack_mags(self, force: bool = False) -> None:
         """Stack magnitudes."""
         # Skip time-intensive stacking if already done
-        if self.file_stack_mags.exists() and not force:
+        file = self.file_stack_mags_flipped if self._flipped else self.file_stack_mags
+        if file.exists() and not force:
             print("   mags already stacked")
             return
 
@@ -276,8 +331,10 @@ class Stacker:
         results = self._stack_flux_or_mag(flux=False)
 
         # Save all results
-        np.savez_compressed(self.file_stack_mags, **results)  # type: ignore
+        np.savez_compressed(file, **results)  # type: ignore
         print(".")
+
+        self._new_mags_stack = True
 
     def _stack_colors(self, flux: bool) -> dict:
         """Perform stacking of either flux ratios or color differences."""
@@ -355,7 +412,12 @@ class Stacker:
             return
 
         # Skip time-intensive stacking if already done
-        if self.file_stack_fcolors.exists() and not force:
+        file = (
+            self.file_stack_fcolors_flipped
+            if self._flipped
+            else self.file_stack_fcolors
+        )
+        if file.exists() and not force:
             print("   flux-colors already stacked")
             return
 
@@ -364,13 +426,20 @@ class Stacker:
         results = self._stack_colors(flux=True)
 
         # Save all results
-        np.savez_compressed(self.file_stack_fcolors, **results)  # type: ignore
+        np.savez_compressed(file, **results)  # type: ignore
         print(".")
+
+        self._new_fcolors_stack = True
 
     def stack_mcolors(self, force: bool = False) -> None:
         """Stack colors using magnitude differences."""
         # Skip time-intensive stacking if already done
-        if self.file_stack_mcolors.exists() and not force:
+        file = (
+            self.file_stack_mcolors_flipped
+            if self._flipped
+            else self.file_stack_mcolors
+        )
+        if file.exists() and not force:
             print("   magnitude-colors already stacked")
             return
 
@@ -379,72 +448,159 @@ class Stacker:
         results = self._stack_colors(flux=False)
 
         # Save all results
-        np.savez_compressed(self.file_stack_mcolors, **results)  # type: ignore
+        np.savez_compressed(file, **results)  # type: ignore
         print(".")
+
+        self._new_mcolors_stack = True
 
     def stack_shear(self, force: bool = False) -> None:
         """Stack shear."""
         raise NotImplementedError("Shear stacking not yet implemented.")
 
-    def run(self, force_selector: bool = False, force_stacker: bool = False) -> None:
-        """Run stacking."""
+    def create_figure(self, stack_type: str, force: bool = False) -> None:
+        """Create figure for given stack type."""
+        if stack_type == "fluxes":
+            if (
+                not force
+                and not self._new_flux_stack
+                and self.file_stack_fluxes_fig.exists()
+            ):
+                return
+            fig_file = self.file_stack_fluxes_fig
+        elif stack_type == "mags":
+            if (
+                not force
+                and not self._new_mags_stack
+                and self.file_stack_mags_fig.exists()
+            ):
+                return
+            fig_file = self.file_stack_mags_fig
+        elif stack_type == "fcolors":
+            if (
+                not force
+                and not self._new_fcolors_stack
+                and self.file_stack_fcolors_fig.exists()
+            ) or self._background_cleaned:
+                return
+            fig_file = self.file_stack_fcolors_fig
+        elif stack_type == "mcolors":
+            if (
+                not force
+                and not self._new_mcolors_stack
+                and self.file_stack_mcolors_fig.exists()
+            ):
+                return
+            fig_file = self.file_stack_mcolors_fig
+        elif stack_type == "shear":
+            if (
+                not force
+                and not self._new_shear_stack
+                and self.file_stack_shear_fig.exists()
+            ):
+                return
+            fig_file = self.file_stack_shear_fig
+        else:
+            raise ValueError(f"Unknown stack type: {stack_type}")
+
+        fig = plot_stack(self.out_dir, stack_type=stack_type)
+        fig.savefig(fig_file, bbox_inches="tight")
+        print(f"   saved figure to {fig_file}")
+
+    def _run_stacking(self, force_stacker: bool = False) -> None:
+        self.save_config()
+        self.find_pairs(force=force_stacker)
+        if len(self._pairs) == 0:
+            print("   no pairs found, skipping stacking")
+            return
+        self.stack_fluxes(force=force_stacker)
+        self.stack_mags(force=force_stacker)
+        self.stack_fcolors(force=force_stacker)
+        self.stack_mcolors(force=force_stacker)
+        # self.stack_shear()
+
+        print("   stacking complete")
+
+    def run(
+        self,
+        force_selector: bool = False,
+        force_stacker: bool = False,
+        force_plotter: bool = False,
+    ) -> None:
         # Run selector
         self.selector.run(force=force_selector)
-
-        # Set foreground and background samples
-        if self.fg_stars:
-            self._foreground = pd.read_parquet(self.in_dir / "star_catalog.parquet")
-        else:
-            self._foreground = pd.read_parquet(
-                self.in_dir / "galaxy_catalog_foreground.parquet"
-            )
-        if self.clean_background:
-            self._background = pd.read_parquet(
-                self.in_dir / "galaxy_catalog_background_cleaned.parquet"
-            )
-            self._background_cleaned = True
-        else:
-            self._background = pd.read_parquet(
-                self.in_dir / "galaxy_catalog_background.parquet"
-            )
-            self._background_cleaned = False
-        if self.flip:
-            self._foreground, self._background = self._background, self._foreground
 
         # Create output directory
         self.out_dir.mkdir(parents=True, exist_ok=True)
 
-        # Check for expected output files and run
+        # Flags for new stacks
+        self._new_flux_stack = False
+        self._new_mags_stack = False
+        self._new_fcolors_stack = False
+        self._new_mcolors_stack = False
+        self._new_shear_stack = False
+
+        # Check for expected output files and run unflipped
         if (
             force_stacker
             or not self.file_stack_fluxes.exists()
-            or not self.file_stack_fcolors.exists()
+            or not self.file_stack_mags.exists()
+            or (not self.file_stack_fcolors.exists() and not self._background_cleaned)
             or not self.file_stack_mcolors.exists()
             # or not self.file_stack_shear.exists()
         ):
-            print(f"Running stacking for variant: {self.name}")
-
-            # Save the config
-            with open(self.out_dir / "config_stacker.yaml", "w") as file:
-                config = asdict(self)
-                config["selector"] = asdict(self.selector)
-                yaml.dump(config, file, sort_keys=False)
-
-            # Run stacking
-            self.find_pairs(force=force_stacker)
-            if len(self._pairs) == 0:
-                print("   no pairs found, skipping stacking\n")
-                return
-            self.stack_fluxes(force=force_stacker)
-            self.stack_mags(force=force_stacker)
-            self.stack_fcolors(force=force_stacker)
-            self.stack_mcolors(force=force_stacker)
-            # self.stack_shear()
-            ...
-
-            print("   stacking complete")
+            print("Running stacking for variant:", self.name)
+            self._flipped = False
+            self._run_stacking(force_stacker=force_stacker)
         else:
-            print(f"Stacking already done for variant: {self.name}")
+            print("Stacking already done for variant:", self.name)
+
+        # Check for expected output files and run flipped
+        if (
+            force_stacker
+            or not self.file_stack_fluxes_flipped.exists()
+            or not self.file_stack_mags_flipped.exists()
+            or (
+                not self.file_stack_fcolors_flipped.exists()
+                and not self._background_cleaned
+            )
+            or not self.file_stack_mcolors_flipped.exists()
+            # or not self.file_stack_shear_flipped.exists()
+        ):
+            print("Running FLIPPED stacking for variant:", self.name)
+            self._flipped = True
+            self._foreground, self._background = self._background, self._foreground
+            self._run_stacking(force_stacker=force_stacker)
+        else:
+            print("FLIPPED stacking already done for variant:", self.name)
+
+        # Save figs
+        if (
+            force_plotter
+            or any(
+                (
+                    self._new_flux_stack,
+                    self._new_mags_stack,
+                    self._new_fcolors_stack,
+                    self._new_mcolors_stack,
+                )
+            )
+            or not self.file_stack_fluxes_fig.exists()
+            or not self.file_stack_mags_fig.exists()
+            or (
+                not self.file_stack_fcolors_fig.exists()
+                and not self._background_cleaned
+            )
+            or not self.file_stack_mcolors_fig.exists()
+            # or not self.file_stack_shear_fig.exists()
+        ):
+            print("Creating figures for variant:", self.name)
+            self.create_figure("fluxes", force=force_plotter)
+            self.create_figure("mags", force=force_plotter)
+            self.create_figure("fcolors", force=force_plotter)
+            self.create_figure("mcolors", force=force_plotter)
+            # self.create_figure("shear", force=force_plotter)
+        else:
+            print("Figures already exist for variant:", self.name)
 
         print()
 
@@ -454,6 +610,18 @@ Default = Stacker
 
 
 # Other variants
+@dataclass
+class Nbins5(Default):
+    name: str = "nbins_5"
+    n_bins: int | dict = 5
+
+
+@dataclass
+class Nbins20(Default):
+    name: str = "nbins_20"
+    n_bins: int | dict = 20
+
+
 @dataclass
 class UnCleaned(Default):
     name: str = "uncleaned"

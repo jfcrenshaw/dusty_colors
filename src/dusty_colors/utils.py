@@ -1,5 +1,6 @@
 """Utilities for data processing."""
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.stats import binned_statistic
@@ -77,3 +78,96 @@ def clean_data(data: pd.DataFrame) -> pd.DataFrame:
         data.loc[mask == False, col] = np.nan
 
     return data
+
+
+def load_stack(stack, stack_type, r_norm=3):
+    stack_dict = {}
+
+    # Load both data files
+    try:
+        data = np.load(stack / f"stack_{stack_type}.npz")
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"Stack file not found: {stack / f'stack_{stack_type}.npz'}"
+        )
+    try:
+        data_flipped = np.load(stack / f"stack_{stack_type}_flipped.npz")
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"Flipped stack file not found: {stack / f'stack_{stack_type}_flipped.npz'}"
+        )
+
+    # Get the keys
+    keys = [key.split("_")[0] for key in data.keys() if key.endswith("_avg")]
+
+    for key in keys:
+        # Bin centers
+        r = data[f"{key}_bin_centers"]
+
+        # Load averages and errors
+        x = data[f"{key}_avg"]
+        err = data[f"{key}_err"]
+        x_f = data_flipped[f"{key}_avg"]
+        err_f = data_flipped[f"{key}_err"]
+
+        if stack_type == "mags" or stack_type == "mcolors":
+            # Correct signal using flipped data
+            x = x - x_f
+            err = np.sqrt(err**2 + err_f**2)
+
+            # Normalize to large radii
+            norm = np.nanmean(x[r > r_norm])
+            x -= norm
+        else:
+            # Correct signal using flipped data
+            x = x / x_f
+            err = x / x_f * np.sqrt((err / x) ** 2 + (err_f / x_f) ** 2)
+
+            # Normalize to large radii
+            norm = np.nanmean(x[r > r_norm])
+            x /= norm
+            err /= norm
+
+        # Store in dictionary
+        stack_dict[f"{key}_bin_centers"] = r
+        stack_dict[f"{key}_avg"] = x
+        stack_dict[f"{key}_err"] = err
+
+    return stack_dict
+
+
+def plot_stack(stack, stack_type, r_norm=3):
+    fig, ax = plt.subplots(figsize=(4, 3), dpi=150)
+
+    stack_data = load_stack(stack, stack_type=stack_type, r_norm=r_norm)
+    keys = [key.split("_")[0] for key in stack_data.keys() if key.endswith("_avg")]
+
+    for key in keys:
+        ax.errorbar(
+            stack_data[f"{key}_bin_centers"],
+            stack_data[f"{key}_avg"],
+            yerr=stack_data[f"{key}_err"],
+            label=key,
+            alpha=0.7,
+        )
+
+    # Label the y axis
+    if stack_type == "fluxes":
+        ax.set_ylabel("Normalized flux")
+    elif stack_type == "mags":
+        ax.set_ylabel("Magnitude difference")
+    elif stack_type == "fcolors":
+        ax.set_ylabel("Normalized flux ratio")
+    elif stack_type == "mcolors":
+        ax.set_ylabel("Color difference")
+
+    # Reference lines
+    if stack_type == "fluxes" or stack_type == "fcolors":
+        ax.axhline(1, color="k", ls="--", lw=0.8, alpha=0.5)
+    else:
+        ax.axhline(0, color="k", ls="--", lw=0.8, alpha=0.5)
+
+    ax.legend(frameon=False, fontsize=8, handlelength=1)
+    ax.set(xlabel="Impact parameter [Mpc]")
+
+    return fig

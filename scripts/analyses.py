@@ -82,6 +82,8 @@ variants = [
         name="bg_lowz",
         selector=selector.BgLowZ(),
     ),
+    stacker.Nbins5(),
+    stacker.Nbins20(),
     stacker.SNRMax20(),
     stacker.SNRMax500(),
     stacker.SNRMaxInf(),
