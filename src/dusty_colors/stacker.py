@@ -45,6 +45,7 @@ class Stacker:
     # For null tests
     fg_stars: bool = False  # Whether to use stars as foreground objects
     randomize_positions: bool = False  # Whether to randomize positions
+    random_seed: int = 42  # Random seed for position randomization
 
     # How to calculate errors
     bootstrap: bool = True  # If false, use analytic errors
@@ -128,7 +129,8 @@ class Stacker:
         print("   finding pairs...", end=" ", flush=True)
 
         if self.randomize_positions:
-            rng = np.random.default_rng(42)
+            rng = np.random.default_rng(self.random_seed)
+
             # Foreground positions
             R = np.sqrt(rng.uniform(size=len(self._foreground)))
             theta = rng.uniform(0, 2 * np.pi, size=len(R))
@@ -685,5 +687,5 @@ class NullStarsFlip(Default):
 
 @dataclass
 class RandPositions(Default):
-    name: str = "rand_positions"
+    name: str = "rand_positions_42"
     randomize_positions: bool = True
