@@ -1,7 +1,9 @@
 """Run some necessary post-processing steps for the DP1 catalog."""
 
 import numpy as np
+import healpy as hp
 from astropy.table import Table, join
+from healsparse import HealSparseMap
 
 from dusty_colors.utils import fields, flux_to_mag
 
@@ -81,49 +83,50 @@ shape_noise = 0.264 * (i_snr / 20) ** -0.891 * (R2 / 0.5) ** -1.015
 measurement_err = 0.4
 cat["shear_err"] = np.sqrt(shape_noise**2 + measurement_err**2)
 
-# Calculate pixelized depths in i band
-# ------------------------------------
+# Calculate pixelized depths
+# --------------------------
+# Set resolutions for healsparse maps
+nside_coverage = 32
+nside_sparse = 131072
 
-# First for individual galaxies...
-i5 = cat["i_cModelMag"] - 2.5 * np.log10(5 / i_snr)
-ra = cat["coord_ra"]
-dec = cat["coord_dec"]
-
-# Calculate 2D histogram of mean i5 values
-# First, digitize the coordinates to get bin indices
-# (-1 because digitize returns 1-based indices)
-n_bins = 2000
-ra_edges = np.linspace(ra.min(), ra.max(), n_bins + 1)
-dec_edges = np.linspace(dec.min(), dec.max(), n_bins + 1)
-ra_indices = np.digitize(ra, ra_edges) - 1
-dec_indices = np.digitize(dec, dec_edges) - 1
-
-# Clip indices to valid range (handle edge cases)
-ra_indices = np.clip(ra_indices, 0, n_bins - 1)
-dec_indices = np.clip(dec_indices, 0, n_bins - 1)
-
-# Create arrays to store sum and count for each bin
-bin_sum = np.zeros((n_bins, n_bins))
-bin_count = np.zeros((n_bins, n_bins))
-
-# Accumulate values in each bin
-np.add.at(bin_sum, (ra_indices, dec_indices), i5)
-np.add.at(bin_count, (ra_indices, dec_indices), 1)
-
-# Calculate mean, avoiding division by zero
-mean_i5_grid = np.divide(
-    bin_sum,
-    bin_count,
-    out=np.full_like(bin_sum, np.nan),
-    where=bin_count > 0,
+# Assign each galaxy to a pixel
+pixel_indices = hp.ang2pix(
+    nside_sparse,
+    np.deg2rad(cat["coord_dec"]),
+    np.deg2rad(cat["coord_ra"]),
+    lonlat=True,
 )
+cat["pixel"] = pixel_indices
 
-# Assign mean i5 value to each galaxy based on its bin
-galaxy_mean_i5 = mean_i5_grid[ra_indices, dec_indices]
+# Loop over each band
+for band in "ugrizy":
+    # Calculate depth per galaxy...
+    snr = np.clip(cat[f"{band}_snr"], 1, None)
+    m5 = cat[f"{band}_cModelMag"] - 2.5 * np.log10(5 / snr)
+    cat[f"{band}5"] = m5
 
-# Save data
-cat["i5"] = i5
-cat["i5_pixel"] = galaxy_mean_i5
+    # Instantiate the map
+    m5_map = HealSparseMap.make_empty(
+        nside_coverage=nside_coverage,
+        nside_sparse=nside_sparse,
+        dtype=float,
+    )
+
+    # Loop over each pixel
+    pixelized = cat.group_by("pixel")
+    for pixel, data in zip(pixelized.groups.keys, pixelized.groups):
+        # Set the median
+        median = np.median(data[f"{band}5"], keepdims=True).astype(float)
+        m5_map.update_values_pix(pixel[0], median)
+
+    cat[f"{band}5_pixel"] = m5_map.get_values_pix(cat["pixel"])
+
+# Save depths from DM maps
+for band in "ugrizy":
+    depth_map = HealSparseMap.read(f"data/deepCoadd_psf_maglim_{band}.fits")
+    cat[f"{band}5_pixel_DM"] = depth_map.get_values_pos(
+        cat["coord_ra"], cat["coord_dec"]
+    )
 
 # Save field names
 field = np.empty(len(cat), dtype="U15")

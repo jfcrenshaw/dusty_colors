@@ -3,6 +3,7 @@
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import yaml
@@ -25,12 +26,13 @@ class Selector:
 
     # Cuts on faint end
     i_cut: float = 24.0  # Maximum i-band magnitude
-    min_snr_u: float = 5
+    min_snr_u: float = 1
     min_snr_g: float = 5
     min_snr_r: float = 5
     min_snr_i: float = 10
     min_snr_z: float = 5
-    min_snr_y: float = 5
+    min_snr_y: float = 1
+    min_pixel_quantile: float = 0.05  # Minimum pixel depth quantile to accept
 
     # Cuts on bright end
     bright_cut: float = 18.0  # Don't use objects brighter than this in i (mag)
@@ -40,13 +42,13 @@ class Selector:
     blendedness_cut: float = 0.42  # Maximum blendedness
 
     # Photo-z quality cuts
-    pz_max_sig: float = 0.25  # Max photo-z uncertainty (1-sigma)
-    pz_max_diff: float = 0.2  # Max difference between FZB and LePhare
+    pz_max_sig: float = 0.1  # Max photo-z uncertainty (1-sigma)
+    pz_max_diff: float = 0.1  # Max difference between FZB and LePhare
 
     # Foreground/background selection
     fg_zmin: float = 0.2
     fg_zmax: float = 0.5
-    bg_zmin: float = 0.6
+    bg_zmin: float = 0.7
     bg_zmax: float = 1.5
 
     # Red sequence selection
@@ -61,12 +63,14 @@ class Selector:
         self.in_dir = Path("data")
         self.out_dir = Path(f"results/catalogs/{self.name}")
         self.file_galaxies = self.out_dir / "galaxy_catalog.parquet"
+        self.file_galaxies_pzcut = self.out_dir / "galaxy_catalog_pzcut.parquet"
         self.file_foreground = self.out_dir / "galaxy_catalog_foreground.parquet"
         self.file_background = self.out_dir / "galaxy_catalog_background.parquet"
         self.file_background_cleaned = (
             self.out_dir / "galaxy_catalog_background_cleaned.parquet"
         )
         self.file_stars = self.out_dir / "star_catalog.parquet"
+        self.file_figure_photoz = self.out_dir / "fig_photoz.png"
 
     def cut_photoz(self, cat: pd.DataFrame) -> pd.DataFrame:
         """Define the photo-z quality cut."""
@@ -94,6 +98,108 @@ class Selector:
 
         return cat[cut]
 
+    def create_figure_photoz(self) -> None:
+        """Create 3panel figure showing photo-z selection."""
+        # Load photo-z catalogs
+        fg_cat = pd.read_parquet(self.file_foreground)
+        bg_cat = pd.read_parquet(self.file_background)
+
+        fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(7, 2), dpi=150)
+
+        # Panel 1: Spec-z vs photo-z
+        settings = dict(extent=(0, 2, 0, 2), gridsize=50, norm="log", edgecolors="none")
+        ax1.hexbin(
+            fg_cat["redshift"][~fg_cat["redshift.mask"]],
+            fg_cat["z_phot"][~fg_cat["redshift.mask"]],
+            cmap="Blues",
+            **settings,
+        )
+        ax1.hexbin(
+            bg_cat["redshift"][~bg_cat["redshift.mask"]],
+            bg_cat["z_phot"][~bg_cat["redshift.mask"]],
+            cmap="Reds",
+            **settings,
+        )
+        ax1.set(
+            xlim=(0, 1.5),
+            ylim=(0, 1.5),
+            xlabel="Spec-z",
+            ylabel="Photo-z",
+            aspect="equal",
+        )
+        ax1.plot([0, 2], [0, 2], c="k", lw=1, ls="--", zorder=0)
+
+        # Panel 2: FlexZBoost vs LePhare photo-z
+        ax2.hexbin(
+            fg_cat["fzboost_z_mode"],
+            fg_cat["lephare_z_mode"],
+            cmap="Blues",
+            **settings,
+        )
+        ax2.hexbin(
+            bg_cat["fzboost_z_mode"],
+            bg_cat["lephare_z_mode"],
+            cmap="Reds",
+            **settings,
+        )
+        ax2.set(
+            xlim=(0, 1.5),
+            ylim=(0, 1.5),
+            xlabel="FlexZBoost photo-z",
+            ylabel="LePhare photo-z",
+            aspect="equal",
+        )
+        ax2.plot([0, 2], [0, 2], c="k", lw=1, ls="--", zorder=0)
+
+        # Panel 3: Redshift histograms
+        # Settings for all histograms
+        settings = dict(range=(0, 1.5), bins=50, density=True, histtype="step")
+
+        # Foreground sample
+        ax3.hist(
+            fg_cat["z_phot"],
+            **settings,
+            color="C0",
+            ls="-",
+        )
+        ax3.hist(
+            fg_cat["redshift"][~fg_cat["redshift.mask"]],
+            **settings,
+            color="C0",
+            ls="--",
+        )
+
+        # Background sample
+        ax3.hist(
+            bg_cat["z_phot"],
+            **settings,
+            color="C3",
+            ls="-",
+        )
+        ax3.hist(
+            bg_cat["redshift"][~bg_cat["redshift.mask"]],
+            **settings,
+            color="C3",
+            ls="--",
+        )
+
+        ax3.set(
+            xlim=(0, 1.5),
+            ylim=(0, 6.5),
+            xlabel="Redshift",
+            ylabel="Frequency",
+            aspect=1.5 / 6.5,
+        )
+
+        ax3.hist([], histtype="step", color="k", ls="-", label="Photo-z")
+        ax3.hist([], histtype="step", color="k", ls="--", label="Spec-z")
+        ax3.legend(handlelength=1, frameon=False, fontsize=8)
+
+        fig.subplots_adjust(wspace=0.4)
+
+        fig.savefig(self.file_figure_photoz, dpi=500, bbox_inches="tight")
+        print(f"   saved figure to {self.file_figure_photoz}")
+
     def run(self, force: bool = False) -> None:
         """Run selection."""
         # Set directories
@@ -104,6 +210,7 @@ class Selector:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         # Check for expected output files and run
+        ran_selection = False
         if (
             force
             or not self.file_galaxies.exists()
@@ -126,17 +233,32 @@ class Selector:
                 cat = select_ecdfs(cat)
                 print("   after ECDFS cut:", len(cat))
 
+            # Cut bad pixels
+            for band in ["u", "g", "r", "i", "z", "y"]:
+                cat = cat.query(f"({band}5_pixel > 20) & ({band}5_pixel < 30)")
+            print("   after cutting bad pixels:", len(cat))
+
             # Apply depth cut
             # Need to determine minimum depth such that the i_cut
             # matches the specified i-band SNR cut
             i5_cut = self.i_cut + 2.5 * np.log10(self.min_snr_i / 5)
             cat = cat.query(f"i5_pixel > {i5_cut}")
+            for band in "ugrzy":
+                qcut = np.quantile(
+                    np.unique(cat[f"{band}5_pixel"]),
+                    self.min_pixel_quantile,
+                )
+                cat = cat.query(f"{band}5_pixel > {qcut}")
             print("   after cutting shallow pixels:", len(cat))
 
             # Cut on SNR
-            for band in ["u", "g", "r", "i", "z", "y"]:
+            for band in "ugrizy":
                 cat = cat.query(f"{band}_snr > @self.min_snr_{band}")
             print("   after SNR cuts:", len(cat))
+
+            # Cut on i-band magnitude
+            cat = cat.query("i_cModelMag < @self.i_cut")
+            print("   after i-band magnitude cut:", len(cat))
 
             # Bright mask
             if self.bright_radius > 0:
@@ -180,15 +302,19 @@ class Selector:
             print(f"   stars/galaxies: {len(stars)}, {len(galaxies)}")
 
             # Photo-z quality cut
-            galaxies = self.cut_photoz(galaxies)
+            galaxies_pzcut = self.cut_photoz(galaxies)
             print("   after photo-z quality cut:", len(galaxies))
 
             # Foreground selection
-            fg_cat = galaxies.query("z_phot > @self.fg_zmin and z_phot < @self.fg_zmax")
+            fg_cat = galaxies_pzcut.query(
+                "z_phot > @self.fg_zmin and z_phot < @self.fg_zmax"
+            )
             print("   foreground galaxies:", len(fg_cat))
 
             # Background selection
-            bg_cat = galaxies.query("z_phot > @self.bg_zmin and z_phot < @self.bg_zmax")
+            bg_cat = galaxies_pzcut.query(
+                "z_phot > @self.bg_zmin and z_phot < @self.bg_zmax"
+            )
             print("   background galaxies:", len(bg_cat))
 
             # Red sequence selection
@@ -203,6 +329,7 @@ class Selector:
 
             # Save catalogs
             galaxies.to_parquet(self.file_galaxies)
+            galaxies_pzcut.to_parquet(self.file_galaxies_pzcut)
             fg_cat.to_parquet(self.file_foreground)
             bg_cat.to_parquet(self.file_background)
             bg_cleaned.to_parquet(self.file_background_cleaned)
@@ -210,8 +337,16 @@ class Selector:
 
             print("   selection complete")
 
+            ran_selection = True
+
         else:
             print(f"Selection already done for variant: {self.name}")
+
+        if ran_selection or not self.file_figure_photoz.exists():
+            print(f"Creating photo-z plots for variant: {self.name}")
+            self.create_figure_photoz()
+        else:
+            print(f"Photo-z plots already exist for variant: {self.name}")
 
 
 # Alias default variant
