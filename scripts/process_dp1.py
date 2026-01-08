@@ -1,7 +1,8 @@
 """Run some necessary post-processing steps for the DP1 catalog."""
 
-import numpy as np
 import healpy as hp
+import numpy as np
+from astropy import units as u
 from astropy.table import Table, join
 from healsparse import HealSparseMap
 
@@ -148,10 +149,11 @@ centers = {
 def r_center(row):
     c_ra, c_dec = centers[row["field"].lower()]
     r = np.sqrt((row["coord_ra"] - c_ra) ** 2 + (row["coord_dec"] - c_dec) ** 2)  # deg
-    return r * 60  # arcmin
+    return float(r * 60)  # arcmin
 
 
-cat["r_center"] = cat.apply(r_center, axis=1)
+cat["r_center"] = [r_center(row) for row in cat] * u.arcmin
+
 
 # Add columns for colors
 bands = "ugrizy"
