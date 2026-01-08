@@ -34,9 +34,6 @@ class Stacker:
     r_min: float = 0.0  # Minimum radius (Mpc or arcmin)
     r_max: float = 12  # Maximum radius (Mpc or arcmin)
     n_bins: int | dict = 11
-    # field(
-    #    default_factory=lambda: dict(u=40, g=40, r=20, i=10, z=10, y=10)
-    # )
 
     # Toggle tomographic selection
     tomographic: bool = True  # If false, use all pairs with z_bg > z_fg + dz_min
