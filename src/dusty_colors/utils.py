@@ -34,9 +34,12 @@ def select_ecdfs(cat: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def clean_data(data: pd.DataFrame) -> pd.DataFrame:
+def clean_data(
+    data: pd.DataFrame, nonuniformity=True, ztrends=True, outliers=True
+) -> pd.DataFrame:
     """Clean data by removing redshift trends and rejecting outliers."""
     data = data.copy()
+
     for col in data.columns:
         if (
             "Err" in col
@@ -45,37 +48,66 @@ def clean_data(data: pd.DataFrame) -> pd.DataFrame:
         ):
             continue
 
-        # Remove median trend
-        dz = 0.04
-        bins = np.arange(data.z_phot.min() - 2 * dz, data.z_phot.max() + 2 * dz, dz)
-        stat, bin_edges, _ = binned_statistic(
-            data.z_phot,
-            data[col],
-            statistic=np.nanmedian,
-            bins=bins,
-        )
-        bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
-
-        # Subtract off trend from mag data
-        if "Mag" in col or "-" in col:
-            data[col] = (
-                data[col]
-                - np.interp(data.z_phot, bin_centers, stat)
-                + np.nanmedian(data[col])
+        if ztrends:
+            # Remove median trend
+            dz = 0.04
+            bins = np.arange(data.z_phot.min() - 2 * dz, data.z_phot.max() + 2 * dz, dz)
+            stat, bin_edges, _ = binned_statistic(
+                data.z_phot,
+                data[col],
+                statistic=np.nanmedian,
+                bins=bins,
             )
-        # Divide out trend from flux data
-        elif "Flux" in col:
-            data[col] = (
-                data[col]
-                / np.interp(data.z_phot, bin_centers, stat)
-                * np.nanmedian(data[col])
-            )
+            bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
 
-        # Remove outliers with isolation forest
-        X = np.column_stack([data[col].values, data.z_phot.values])
-        iso = IsolationForest(random_state=42)
-        mask = iso.fit_predict(X) == 1
-        data.loc[mask == False, col] = np.nan
+            # Subtract off trend from mag data
+            if "Mag" in col or "-" in col:
+                data[col] = (
+                    data[col]
+                    - np.interp(data.z_phot, bin_centers, stat)
+                    + np.nanmedian(data[col])
+                )
+            # Divide out trend from flux data
+            elif "Flux" in col:
+                data[col] = (
+                    data[col]
+                    / np.interp(data.z_phot, bin_centers, stat)
+                    * np.nanmedian(data[col])
+                )
+
+        if outliers:
+            # Remove outliers with isolation forest
+            X = np.column_stack([data[col].values, data.z_phot.values])
+            iso = IsolationForest(random_state=42)
+            mask = iso.fit_predict(X) == 1
+            data.loc[mask == False, col] = np.nan
+
+    if nonuniformity:
+        # Assemble design matrix for polynomial fit to non-uniformity
+        order = 2  # Order of polynomial to fit
+        A = np.array([data[f"{band}5_pixel"].values for band in "ugrizy"])
+        A = A.T
+        A = np.hstack([A**i for i in range(1, order + 1)])
+        A = np.hstack((A, np.ones((A.shape[0], 1))))
+
+        # Loop over flux types
+        for ftype in ["cModel", "gaap1p0"]:
+            for band in "ugrizy":
+                # Get mag column
+                col = f"{band}_{ftype}Mag"
+                y = data[col].values
+
+                # Fit to finite values
+                mask = np.isfinite(data[col]) & np.isfinite(A).all(axis=1)
+                coeffs, *_ = np.linalg.lstsq(A[mask], y[mask], rcond=None)
+
+                # Correct the magnitudes
+                offset = np.nanmean(y) - A @ coeffs
+                data[col] += offset
+
+                # Set corresponding flux
+                flux_col = f"{band}_{ftype}Flux"
+                data[flux_col] = 10 ** ((data[col] - 31.4) / -2.5)
 
     return data
 

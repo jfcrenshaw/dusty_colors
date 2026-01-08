@@ -32,8 +32,8 @@ class Stacker:
     # Defining bins
     bin_by_angle: bool = False  # If false, bin by physical impact parameter
     r_min: float = 0.0  # Minimum radius (Mpc or arcmin)
-    r_max: float = 4  # Maximum radius (Mpc or arcmin)
-    n_bins: int | dict = 10
+    r_max: float = 12  # Maximum radius (Mpc or arcmin)
+    n_bins: int | dict = 11
     # field(
     #    default_factory=lambda: dict(u=40, g=40, r=20, i=10, z=10, y=10)
     # )
@@ -51,13 +51,15 @@ class Stacker:
     bootstrap: bool = True  # If false, use analytic errors
 
     # Plotting settings
-    r_norm: float = 3.0  # Radius (Mpc or arcmin) beyond which is used to normalize
+    r_norm: float = 15  # Radius (Mpc or arcmin) beyond which is used to normalize
 
     def __post_init__(self) -> None:
         """Post-init processing."""
         # Directories and files
-        self.in_dir = Path(f"results/catalogs/{self.selector.name}")
-        self.out_dir = Path(f"results/stacks/{self.name}")
+        current_file = Path(__file__).resolve()
+        root = current_file.parents[2]
+        self.in_dir = root / f"results/catalogs/{self.selector.name}"
+        self.out_dir = root / f"results/stacks/{self.name}"
 
         self.file_config = self.out_dir / "config_stacker.yaml"
 
@@ -109,8 +111,11 @@ class Stacker:
             return np.linspace(self.r_min, self.r_max, n_bins + 1)
         else:
             # Bins in Mpc
-            r = np.sqrt(np.linspace(self.r_min**2, self.r_max**2, n_bins))
-            r = np.insert(r, 1, r[1] / 2)  # Add extra bin at small scales
+            # r = np.sqrt(np.linspace(self.r_min**2, self.r_max**2, n_bins))
+            # r = np.concatenate(  # Extra small-scale bins
+            #    (np.linspace(0, r[1], 5), r[2:])
+            # )
+            r = np.linspace(self.r_min, self.r_max, n_bins)
             return r
 
     def _find_pairs(self, force: bool = False) -> None:
@@ -515,20 +520,18 @@ class Stacker:
         self.selector.run(force=force_selector)
 
         # Set foreground and background samples
-        if self.fg_stars:
-            self._foreground: pd.DataFrame = pd.read_parquet(
-                self.in_dir / "star_catalog.parquet"
-            )
-        else:
-            self._foreground: pd.DataFrame = pd.read_parquet(
-                self.in_dir / "galaxy_catalog_foreground.parquet"
-            )
         if self.clean_background:
+            self._foreground: pd.DataFrame = pd.read_parquet(
+                self.in_dir / "galaxy_catalog_foreground_cleaned.parquet"
+            )
             self._background: pd.DataFrame = pd.read_parquet(
                 self.in_dir / "galaxy_catalog_background_cleaned.parquet"
             )
             self._background_cleaned = True
         else:
+            self._foreground: pd.DataFrame = pd.read_parquet(
+                self.in_dir / "galaxy_catalog_foreground.parquet"
+            )
             self._background: pd.DataFrame = pd.read_parquet(
                 self.in_dir / "galaxy_catalog_background.parquet"
             )

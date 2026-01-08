@@ -21,6 +21,8 @@ dependencies = [
     "flake8>=7.0",
     "mypy>=1.5",
     "pyarrow>=21.0",
+    "healpy>=1.19",
+    "healsparse>=1.11",
 ]
 
 [tool.setuptools.packages.find]

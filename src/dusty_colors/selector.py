@@ -51,6 +51,11 @@ class Selector:
     bg_zmin: float = 0.7
     bg_zmax: float = 1.5
 
+    # Parameters for background cleaning
+    clean_nonuniformity: bool = True  # Clean non-uniformity in background?
+    clean_ztrends: bool = True  # Clean redshift trends in background?
+    clean_outliers: bool = True  # Remove outliers from background?
+
     # Red sequence selection
     bg_red_seq: bool = False  # If true, select bg galaxies on the red sequence
     red_seq_cut: str = (  # Color-magnitude cut for red sequence
@@ -60,12 +65,17 @@ class Selector:
 
     def __post_init__(self) -> None:
         """Post-init processing."""
-        self.in_dir = Path("data")
-        self.out_dir = Path(f"results/catalogs/{self.name}")
+        current_file = Path(__file__).resolve()
+        root = current_file.parents[2]
+        self.in_dir = root / "data"
+        self.out_dir = root / f"results/catalogs/{self.name}"
         self.file_galaxies = self.out_dir / "galaxy_catalog.parquet"
         self.file_galaxies_pzcut = self.out_dir / "galaxy_catalog_pzcut.parquet"
         self.file_foreground = self.out_dir / "galaxy_catalog_foreground.parquet"
         self.file_background = self.out_dir / "galaxy_catalog_background.parquet"
+        self.file_foreground_cleaned = (
+            self.out_dir / "galaxy_catalog_foreground_cleaned.parquet"
+        )
         self.file_background_cleaned = (
             self.out_dir / "galaxy_catalog_background_cleaned.parquet"
         )
@@ -202,30 +212,29 @@ class Selector:
 
     def run(self, force: bool = False) -> None:
         """Run selection."""
-        # Set directories
-        in_dir = Path("data")
-        out_dir = Path(f"results/catalogs/{self.name}")
-
         # Create output directory
-        out_dir.mkdir(parents=True, exist_ok=True)
+        self.out_dir.mkdir(parents=True, exist_ok=True)
 
         # Check for expected output files and run
         ran_selection = False
         if (
             force
             or not self.file_galaxies.exists()
+            or not self.file_galaxies_pzcut.exists()
             or not self.file_foreground.exists()
             or not self.file_background.exists()
+            or not self.file_foreground_cleaned.exists()
+            or not self.file_background_cleaned.exists()
             or not self.file_stars.exists()
         ):
             print(f"Running selection for variant: {self.name}")
 
             # Save the config
-            with open(out_dir / "config_selector.yaml", "w") as file:
+            with open(self.out_dir / "config_selector.yaml", "w") as file:
                 yaml.dump(asdict(self), file, sort_keys=False)
 
             # Load the processed catalog
-            cat = pd.read_parquet(in_dir / "dp1_catalog_processed.parquet")
+            cat = pd.read_parquet(self.in_dir / "dp1_catalog_processed.parquet")
             print("   starting length:", len(cat))
 
             # Only ECDFS?
@@ -323,15 +332,28 @@ class Selector:
                 bg_cat = bg_cat.query(self.red_seq_cut)
                 print("   background galaxies after red sequence:", len(bg_cat))
 
-            # Clean the background catalog
+            # Clean the catalogs
+            print("   cleaning the foreground...")
+            fg_cleaned = clean_data(
+                fg_cat,
+                nonuniformity=self.clean_nonuniformity,
+                ztrends=self.clean_ztrends,
+                outliers=self.clean_outliers,
+            )
             print("   cleaning the background...")
-            bg_cleaned = clean_data(bg_cat)
+            bg_cleaned = clean_data(
+                bg_cat,
+                nonuniformity=self.clean_nonuniformity,
+                ztrends=self.clean_ztrends,
+                outliers=self.clean_outliers,
+            )
 
             # Save catalogs
             galaxies.to_parquet(self.file_galaxies)
             galaxies_pzcut.to_parquet(self.file_galaxies_pzcut)
             fg_cat.to_parquet(self.file_foreground)
             bg_cat.to_parquet(self.file_background)
+            fg_cleaned.to_parquet(self.file_foreground_cleaned)
             bg_cleaned.to_parquet(self.file_background_cleaned)
             stars.to_parquet(self.file_stars)
 

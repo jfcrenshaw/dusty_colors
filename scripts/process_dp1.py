@@ -137,6 +137,22 @@ for name in fields:
     field[mask] = name
 cat["field"] = field
 
+# Calculate distance from field centers (in arcminutes)
+centers = {
+    "ecdfs": (53.13, -28.10),
+    "edfs": (59.10, -48.73),
+    "rubin sv 95 -25": (95.00, -25.00),
+}
+
+
+def r_center(row):
+    c_ra, c_dec = centers[row["field"].lower()]
+    r = np.sqrt((row["coord_ra"] - c_ra) ** 2 + (row["coord_dec"] - c_dec) ** 2)  # deg
+    return r * 60  # arcmin
+
+
+cat["r_center"] = cat.apply(r_center, axis=1)
+
 # Add columns for colors
 bands = "ugrizy"
 for i in range(len(bands) - 1):
