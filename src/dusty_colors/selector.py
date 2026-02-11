@@ -42,14 +42,19 @@ class Selector:
     blendedness_cut: float = 0.42  # Maximum blendedness
 
     # Photo-z quality cuts
+    # Note if you increase either beyond 0.2, process_dp1.py needs to be
+    # re-run with appropriately larger cuts on z_phot_err and z_phot_diff
     pz_max_sig: float = 0.1  # Max photo-z uncertainty (1-sigma)
     pz_max_diff: float = 0.1  # Max difference between FZB and LePhare
 
     # Foreground/background selection
+    # Note if you increase fg_zmax to > 0.5, the kcorrections in process_dp1.py
+    # need to be re-run with a larger zmax, including the "broad" template setup:
+    # https://kcorrect.readthedocs.io/en/stable/templates.html
     fg_zmin: float = 0.2
     fg_zmax: float = 0.5
     bg_zmin: float = 0.7
-    bg_zmax: float = 1.5
+    bg_zmax: float = 1.4
 
     # Parameters for background cleaning
     clean_nonuniformity: bool = True  # Clean non-uniformity in background?

@@ -23,6 +23,8 @@ dependencies = [
     "pyarrow>=21.0",
     "healpy>=1.19",
     "healsparse>=1.11",
+    "kcorrect>=5.1",
+    "seaborn>=0.13",
 ]
 
 [tool.setuptools.packages.find]

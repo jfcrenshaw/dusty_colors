@@ -5,11 +5,17 @@ import numpy as np
 from astropy import units as u
 from astropy.table import Table, join
 from healsparse import HealSparseMap
+from kcorrect.kcorrect import Kcorrect
+from pathlib import Path
 
-from dusty_colors.utils import fields, flux_to_mag
+from dusty_colors.utils import fields, flux_to_mag, root
 
 # Load the raw catalog
 cat = Table.read("data/dp1_catalog_raw.fits")
+
+# Remove stars
+mask = cat["refExtendedness"] > 0.5
+cat = cat[mask]
 
 # Match photo-z's
 pz = Table.read("data/dp1_photoz_no_mags.parquet")
@@ -23,6 +29,22 @@ zref = zref[np.isfinite(zref["redshift"]) & (zref["confidence"] >= 0.95)]
 zref = zref[["objectId", "redshift", "confidence", "type", "source"]]
 cat = join(cat, zref, join_type="left", keys_left="objectID", keys_right="objectId")
 cat.remove_column("objectId")  # Remove duplicated ID column
+
+# Calculate combined photo-z from FZB and LePhare, using inverse-variance weighting
+fzb = cat["fzboost_z_mode"]
+fzb_sig = (cat["fzboost_z_err68_high"] - cat["fzboost_z_err68_low"]) / 2
+lph = cat["lephare_z_mode"]
+lph_sig = (cat["lephare_z_err68_high"] - cat["lephare_z_err68_low"]) / 2
+cat["z_phot"] = (fzb / fzb_sig**2 + lph / lph_sig**2) / (
+    1 / fzb_sig**2 + 1 / lph_sig**2
+)
+cat["z_phot_err"] = np.sqrt(1 / (1 / fzb_sig**2 + 1 / lph_sig**2))
+cat["z_phot_diff"] = np.abs(fzb - lph)
+
+# Apply liberal cuts on photo-z quality to remove objects with very uncertain pz
+# (also remove stars)
+mask = (cat["z_phot_err"] < 0.2) & (cat["z_phot_diff"] < 0.2)
+cat = cat[mask]
 
 
 # De-redden fluxes
@@ -164,6 +186,53 @@ for i in range(len(bands) - 1):
     cat[f"{band1}-{band2}_Err"] = np.sqrt(
         cat[f"{band1}_gaap1p0MagErr"] ** 2 + cat[f"{band2}_gaap1p0MagErr"] ** 2
     )
+cat["g-i"] = cat["g_gaap1p0Mag"] - cat["i_gaap1p0Mag"]
+cat["g-i_Err"] = np.sqrt(cat["g_gaap1p0MagErr"] ** 2 + cat["i_gaap1p0MagErr"] ** 2)
+
+
+# Convert to pandas
+cat = cat.to_pandas()
+
+
+# Apply kcorrections for galaxies at z < 0.5
+# Load the kcorrect model with thousands of templates
+kc = Kcorrect(filename=root / "data" / "kcorrect_broad.fits")
+
+# Get order of bands in kcorrect file
+kc_bands = [str(file).split("_")[-2] for file in kc.responses]
+
+# Extract required values
+redshift = cat.z_phot.values
+maggies = cat[[f"{band}_{ftype}Flux" for band in kc_bands]].values * 10 ** (31.4 / -2.5)
+errs = cat[[f"{band}_{ftype}FluxErr" for band in kc_bands]].values * 10 ** (31.4 / -2.5)
+
+# 5% error floor for u and y bands
+uy_err_floor = 0.05
+errs[:, 3] = np.clip(errs[:, 3], maggies[:, 3] * uy_err_floor, None)
+errs[:, 0] = np.clip(errs[:, 0], maggies[:, 0] * uy_err_floor, None)
+
+# Fit templates
+mask = (redshift < 0.5) & np.isfinite(redshift) & np.isfinite(maggies).all(axis=1)
+ivar = 1 / errs**2
+coeffs = kc.fit_coeffs(redshift=redshift[mask], maggies=maggies[mask], ivar=ivar[mask])
+
+# Extract values we wish to save
+absmag = kc.absmag(
+    redshift=redshift[mask], maggies=maggies[mask], ivar=ivar[mask], coeffs=coeffs
+)
+derived = kc.derived(redshift=redshift[mask], coeffs=coeffs)
+stellar_mass = derived["mremain"]
+
+# Re-order absmag columns to avoid confusion
+absmag = absmag[:, [kc_bands.index(band) for band in "ugrizy"]]
+
+# Save values
+for i, band in enumerate("ugrizy"):
+    cat[f"{band}_absmag"] = np.full(len(cat), np.nan)
+    cat.loc[mask, f"{band}_absmag"] = absmag[:, i]
+cat["stellar_mass"] = np.full(len(cat), np.nan)
+cat.loc[mask, "stellar_mass"] = stellar_mass
+
 
 # Save the processed catalog
-cat.write("data/dp1_catalog_processed.parquet", overwrite=True)
+cat.to_parquet("data/dp1_catalog_processed.parquet")

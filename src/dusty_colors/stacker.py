@@ -22,7 +22,8 @@ class Stacker:
 
     selector: Selector = field(default_factory=DefaultSelector)
 
-    # Clean background?
+    # Use cleaned catalogs?
+    clean_foreground: bool = False
     clean_background: bool = True
 
     # Stacking options
@@ -31,9 +32,10 @@ class Stacker:
 
     # Defining bins
     bin_by_angle: bool = False  # If false, bin by physical impact parameter
-    r_min: float = 0.0  # Minimum radius (Mpc or arcmin)
-    r_max: float = 12  # Maximum radius (Mpc or arcmin)
-    n_bins: int | dict = 11
+    r_bins: list = field(default_factory=lambda: [0.5, 1, 2, 4, 8, 12])  # Mpc or arcmin
+    r_min: float = 0.1  # Minimum radius (Mpc or arcmin)
+    r_max: float = 10  # Maximum radius (Mpc or arcmin)
+    n_bins: int | dict = 10
 
     # Toggle tomographic selection
     tomographic: bool = True  # If false, use all pairs with z_bg > z_fg + dz_min
@@ -48,7 +50,7 @@ class Stacker:
     bootstrap: bool = True  # If false, use analytic errors
 
     # Plotting settings
-    r_norm: float = 15  # Radius (Mpc or arcmin) beyond which is used to normalize
+    r_norm: float = 9  # Radius (Mpc or arcmin) beyond which is used to normalize
 
     def __post_init__(self) -> None:
         """Post-init processing."""
@@ -97,23 +99,41 @@ class Stacker:
             config["selector"] = asdict(self.selector)
             yaml.dump(config, file, sort_keys=False)
 
-    def _get_bins(self, band: str) -> np.ndarray:
+    def _get_bins(self, band: str) -> tuple[np.ndarray, np.ndarray]:
         """Get bin edges."""
         if isinstance(self.n_bins, dict):
             n_bins = self.n_bins[band]
         else:
             n_bins = self.n_bins
-        if self.bin_by_angle:
-            # Bins in arcmin
-            return np.linspace(self.r_min, self.r_max, n_bins + 1)
-        else:
-            # Bins in Mpc
-            # r = np.sqrt(np.linspace(self.r_min**2, self.r_max**2, n_bins))
-            # r = np.concatenate(  # Extra small-scale bins
-            #    (np.linspace(0, r[1], 5), r[2:])
-            # )
-            r = np.linspace(self.r_min, self.r_max, n_bins)
-            return r
+
+        # r = np.sqrt(np.linspace(self.r_min**2, self.r_max**2, n_bins))
+        # r = np.concatenate(  # Extra small-scale bins
+        #    (np.linspace(0, r[1], 5), r[2:])
+        # )
+        # r = np.linspace(self.r_min, self.r_max, n_bins)
+
+        """# Generate bins in log space
+        centers = np.linspace(np.log10(self.r_min), np.log10(self.r_max), n_bins)
+        edges = 0.5 * (centers[1:] + centers[:-1])
+        dx = edges[1] - edges[0]
+        edges = np.insert(edges, 0, edges[0] - dx)
+        edges = np.append(edges, edges[-1] + dx)
+
+        # Now convert to linear space
+        centers = 10**centers
+        edges = 10**edges"""
+
+        # edges = np.logspace(self.r_min, self.r_max, n_bins)
+        # centers = 0.5 * (edges[1:] + edges[:-1])
+
+        centers = np.array(self.r_bins)
+
+        edges = [centers[0] - (centers[1] - centers[0]) / 2]
+        for i in range(len(centers)):
+            edges.append(centers[i] + (centers[i] - edges[i]))
+        edges = np.array(edges)
+
+        return centers, edges
 
     def _find_pairs(self, force: bool = False) -> None:
         """Find foreground-background pairs."""
@@ -249,12 +269,11 @@ class Stacker:
         results = {}
 
         # Loop over bands
-        for band in "ugrizy":
+        for band in "griz":
             print(f" {band}", end="", flush=True)
 
             # Set bins
-            bin_edges = self._get_bins(band)
-            bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+            bin_centers, bin_edges = self._get_bins(band)
             results[f"{band}_bin_centers"] = bin_centers
 
             # Get columns
@@ -329,16 +348,13 @@ class Stacker:
         results = {}
 
         # Loop over bands
-        bands = list("ugrizy")
-        for i in range(len(bands) - 1):
-            band1 = bands[i]
-            band2 = bands[i + 1]
-            print(f" {band1}-{band2}", end="", flush=True)
+        for color in ["g-r", "r-i", "i-z", "g-i"]:
+            print(f" {color}", end="", flush=True)
 
             # Set bins
-            bin_edges = self._get_bins(band1)
-            bin_centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
-            results[f"{band1}-{band2}_bin_centers"] = bin_centers
+            band1, band2 = color.split("-")
+            bin_centers, bin_edges = self._get_bins(band1)
+            results[f"{color}_bin_centers"] = bin_centers
 
             if flux:
                 # Retrieve columns
@@ -366,12 +382,8 @@ class Stacker:
 
             else:
                 # Retrieve columns
-                x = self._background[f"{band1}-{band2}"].iloc[self._pairs[:, 1]].values
-                err = (
-                    self._background[f"{band1}-{band2}_Err"]
-                    .iloc[self._pairs[:, 1]]
-                    .values
-                )
+                x = self._background[f"{color}"].iloc[self._pairs[:, 1]].values
+                err = self._background[f"{color}_Err"].iloc[self._pairs[:, 1]].values
 
                 # Apply SNR maximum
                 err = np.clip(
@@ -386,18 +398,13 @@ class Stacker:
 
             # Calculate binned stats
             avgs, errs = self._calc_binned_stats(sep, x, err, bin_edges)
-            results[f"{band1}-{band2}_avg"] = avgs
-            results[f"{band1}-{band2}_err"] = errs
+            results[f"{color}_avg"] = avgs
+            results[f"{color}_err"] = errs
 
         return results
 
     def _stack_fcolors(self, force: bool = False) -> None:
         """Stack colors using flux ratios."""
-        # Don't stack flux colors if background is cleaned
-        if self._background_cleaned:
-            print("   skipping flux-color stacking (background data is cleaned)")
-            return
-
         # Skip time-intensive stacking if already done
         file = (
             self.file_stack_fcolors_flipped
@@ -467,7 +474,7 @@ class Stacker:
                 not force
                 and not self._new_fcolors_stack
                 and self.file_stack_fcolors_fig.exists()
-            ) or self._background_cleaned:
+            ):
                 return
             fig_file = self.file_stack_fcolors_fig
         elif stack_type == "mcolors":
@@ -493,15 +500,19 @@ class Stacker:
         fig.savefig(fig_file, bbox_inches="tight")
         print(f"   saved figure to {fig_file}")
 
-    def _run_stacking(self, force_stacker: bool = False) -> None:
+    def _run_stacking(
+        self,
+        force_stacker: bool = False,
+        force_pairer: bool = False,
+    ) -> None:
         self._save_config()
-        self._find_pairs(force=force_stacker)
+        self._find_pairs(force=force_pairer)
         if len(self._pairs) == 0:
             print("   no pairs found, skipping stacking")
             return
         self._stack_fluxes(force=force_stacker)
         self._stack_mags(force=force_stacker)
-        self._stack_fcolors(force=force_stacker)
+        # self._stack_fcolors(force=force_stacker)
         self._stack_mcolors(force=force_stacker)
         # self._stack_shear()
 
@@ -510,6 +521,7 @@ class Stacker:
     def run(
         self,
         force_selector: bool = False,
+        force_pairer: bool = False,
         force_stacker: bool = False,
         force_plotter: bool = False,
     ) -> None:
@@ -517,22 +529,22 @@ class Stacker:
         self.selector.run(force=force_selector)
 
         # Set foreground and background samples
-        if self.clean_background:
+        if self.clean_foreground:
             self._foreground: pd.DataFrame = pd.read_parquet(
                 self.in_dir / "galaxy_catalog_foreground_cleaned.parquet"
             )
-            self._background: pd.DataFrame = pd.read_parquet(
-                self.in_dir / "galaxy_catalog_background_cleaned.parquet"
-            )
-            self._background_cleaned = True
         else:
             self._foreground: pd.DataFrame = pd.read_parquet(
                 self.in_dir / "galaxy_catalog_foreground.parquet"
             )
+        if self.clean_background:
+            self._background: pd.DataFrame = pd.read_parquet(
+                self.in_dir / "galaxy_catalog_background_cleaned.parquet"
+            )
+        else:
             self._background: pd.DataFrame = pd.read_parquet(
                 self.in_dir / "galaxy_catalog_background.parquet"
             )
-            self._background_cleaned = False
 
         # Create output directory
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -549,13 +561,13 @@ class Stacker:
             force_stacker
             or not self.file_stack_fluxes.exists()
             or not self.file_stack_mags.exists()
-            or (not self.file_stack_fcolors.exists() and not self._background_cleaned)
+            # or not self.file_stack_fcolors.exists()
             or not self.file_stack_mcolors.exists()
             # or not self.file_stack_shear.exists()
         ):
             print("Running stacking for variant:", self.name)
             self._flipped = False
-            self._run_stacking(force_stacker=force_stacker)
+            self._run_stacking(force_stacker=force_stacker, force_pairer=force_pairer)
         else:
             print("Stacking already done for variant:", self.name)
 
@@ -564,10 +576,7 @@ class Stacker:
             force_stacker
             or not self.file_stack_fluxes_flipped.exists()
             or not self.file_stack_mags_flipped.exists()
-            or (
-                not self.file_stack_fcolors_flipped.exists()
-                and not self._background_cleaned
-            )
+            # or not self.file_stack_fcolors_flipped.exists()
             or not self.file_stack_mcolors_flipped.exists()
             # or not self.file_stack_shear_flipped.exists()
         ):
@@ -591,17 +600,14 @@ class Stacker:
             )
             or not self.file_stack_fluxes_fig.exists()
             or not self.file_stack_mags_fig.exists()
-            or (
-                not self.file_stack_fcolors_fig.exists()
-                and not self._background_cleaned
-            )
+            # or not self.file_stack_fcolors_fig.exists()
             or not self.file_stack_mcolors_fig.exists()
             # or not self.file_stack_shear_fig.exists()
         ):
             print("Creating figures for variant:", self.name)
             self._create_figure("fluxes", force=force_plotter)
             self._create_figure("mags", force=force_plotter)
-            self._create_figure("fcolors", force=force_plotter)
+            # self._create_figure("fcolors", force=force_plotter)
             self._create_figure("mcolors", force=force_plotter)
             # self._create_figure("shear", force=force_plotter)
         else:

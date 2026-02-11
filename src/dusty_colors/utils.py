@@ -5,6 +5,10 @@ import numpy as np
 import pandas as pd
 from scipy.stats import binned_statistic
 from sklearn.ensemble import IsolationForest
+from pathlib import Path
+
+
+root = Path(__file__).parent.parent.parent
 
 fields = {
     "ECDFS": {"ra": 53.13, "dec": -28.10},
@@ -84,29 +88,33 @@ def clean_data(
 
     if nonuniformity:
         # Assemble design matrix for polynomial fit to non-uniformity
-        order = 2  # Order of polynomial to fit
+        order = 1  # Order of polynomial to fit
         A = np.array([data[f"{band}5_pixel"].values for band in "ugrizy"])
         A = A.T
         A = np.hstack([A**i for i in range(1, order + 1)])
         A = np.hstack((A, np.ones((A.shape[0], 1))))
 
-        # Loop over flux types
+        # Create list of columns to clean
+        cols = []
         for ftype in ["cModel", "gaap1p0"]:
             for band in "ugrizy":
-                # Get mag column
-                col = f"{band}_{ftype}Mag"
-                y = data[col].values
+                cols.append(f"{band}_{ftype}Mag")
+        cols += ["u-g", "g-r", "r-i", "i-z", "z-y", "g-i"]
 
-                # Fit to finite values
-                mask = np.isfinite(data[col]) & np.isfinite(A).all(axis=1)
-                coeffs, *_ = np.linalg.lstsq(A[mask], y[mask], rcond=None)
+        for col in cols:
+            y = data[col].values
 
-                # Correct the magnitudes
-                offset = np.nanmean(y) - A @ coeffs
-                data[col] += offset
+            # Fit to finite values
+            mask = np.isfinite(data[col]) & np.isfinite(A).all(axis=1)
+            coeffs, *_ = np.linalg.lstsq(A[mask], y[mask], rcond=None)
 
+            # Correct the magnitudes
+            offset = np.nanmean(y) - A @ coeffs
+            data[col] += offset
+
+            if "Mag" in col:
                 # Set corresponding flux
-                flux_col = f"{band}_{ftype}Flux"
+                flux_col = col.replace("Mag", "Flux")
                 data[flux_col] = 10 ** ((data[col] - 31.4) / -2.5)
 
     return data
