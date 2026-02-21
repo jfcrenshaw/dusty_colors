@@ -57,16 +57,13 @@ class Selector:
     bg_zmax: float = 1.4
 
     # Parameters for background cleaning
-    clean_nonuniformity: bool = True  # Clean non-uniformity in background?
+    clean_nonuniformity: bool = False  # Clean non-uniformity in background?
     clean_ztrends: bool = True  # Clean redshift trends in background?
     clean_outliers: bool = True  # Remove outliers from background?
 
-    # Red sequence selection
-    bg_red_seq: bool = False  # If true, select bg galaxies on the red sequence
-    red_seq_cut: str = (  # Color-magnitude cut for red sequence
-        "((r_gaap1p0Mag - i_gaap1p0Mag) > -0.1 * z_cModelMag + 3.1) and "
-        "((r_gaap1p0Mag - i_gaap1p0Mag) < -0.1 * z_cModelMag + 3.5)"
-    )
+    # Queries for custom cuts
+    fg_query: str | None = None
+    bg_query: str | None = None
 
     def __post_init__(self) -> None:
         """Post-init processing."""
@@ -124,14 +121,14 @@ class Selector:
         # Panel 1: Spec-z vs photo-z
         settings = dict(extent=(0, 2, 0, 2), gridsize=50, norm="log", edgecolors="none")
         ax1.hexbin(
-            fg_cat["redshift"][~fg_cat["redshift.mask"]],
-            fg_cat["z_phot"][~fg_cat["redshift.mask"]],
+            fg_cat["redshift"],
+            fg_cat["z_phot"],
             cmap="Blues",
             **settings,
         )
         ax1.hexbin(
-            bg_cat["redshift"][~bg_cat["redshift.mask"]],
-            bg_cat["z_phot"][~bg_cat["redshift.mask"]],
+            bg_cat["redshift"],
+            bg_cat["z_phot"],
             cmap="Reds",
             **settings,
         )
@@ -178,7 +175,7 @@ class Selector:
             ls="-",
         )
         ax3.hist(
-            fg_cat["redshift"][~fg_cat["redshift.mask"]],
+            fg_cat["redshift"],
             **settings,
             color="C0",
             ls="--",
@@ -192,7 +189,7 @@ class Selector:
             ls="-",
         )
         ax3.hist(
-            bg_cat["redshift"][~bg_cat["redshift.mask"]],
+            bg_cat["redshift"],
             **settings,
             color="C3",
             ls="--",
@@ -331,11 +328,13 @@ class Selector:
             )
             print("   background galaxies:", len(bg_cat))
 
-            # Red sequence selection
-            if self.bg_red_seq:
-                # Fit the red sequence
-                bg_cat = bg_cat.query(self.red_seq_cut)
-                print("   background galaxies after red sequence:", len(bg_cat))
+            # Custom queries
+            if self.fg_query is not None:
+                fg_cat = fg_cat.query(self.fg_query)
+                print("   foreground galaxies after custom query:", len(fg_cat))
+            if self.bg_query is not None:
+                bg_cat = bg_cat.query(self.bg_query)
+                print("   background galaxies after custom query:", len(bg_cat))
 
             # Clean the catalogs
             print("   cleaning the foreground...")
@@ -412,6 +411,17 @@ class SNRi20(Default):
 
 
 @dataclass
+class SNRRelaxed(Default):
+    name: str = "snr_relaxed"
+    min_snr_u: float = 5.0
+    min_snr_g: float = 1.0
+    min_snr_r: float = 1.0
+    min_snr_i: float = 10.0
+    min_snr_z: float = 1.0
+    min_snr_y: float = 5.0
+
+
+@dataclass
 class SNRConservative(Default):
     name: str = "snr_conservative"
     min_snr_u: float = 5.0
@@ -421,6 +431,11 @@ class SNRConservative(Default):
     min_snr_z: float = 10.0
     min_snr_y: float = 5.0
 
+
+@dataclass
+class BrightCut16(Default):
+    name: str = "bright_cut_16"
+    bright_cut: float = 16.0
 
 @dataclass
 class BrightCut20(Default):
@@ -435,16 +450,9 @@ class BrightMaskR20(Default):
 
 
 @dataclass
-class BrightMaskR50(Default):
-    name: str = "bright_mask_r50"
-    bright_radius: float = 50.0
-
-
-@dataclass
-class BrightMaskR100(Default):
-    name: str = "bright_mask_r100"
-    bright_radius: float = 100.0
-
+class BrightMaskR60(Default):
+    name: str = "bright_mask_r60"
+    bright_radius: float = 60.0
 
 @dataclass
 class BlendCut100(Default):
@@ -453,42 +461,17 @@ class BlendCut100(Default):
 
 
 @dataclass
-class BlendCut20(Default):
-    name: str = "blend_cut_20"
-    blendedness_cut: float = 0.20
-
-
-@dataclass
 class BlendCut10(Default):
     name: str = "blend_cut_10"
     blendedness_cut: float = 0.10
 
-
 @dataclass
-class BlendCut01(Default):
-    name: str = "blend_cut_01"
-    blendedness_cut: float = 0.01
-
-
-@dataclass
-class RedSeq(Default):
-    name: str = "red_seq"
-    bg_red_seq: bool = True
-
-
-@dataclass
-class EcdfsOnly(Default):
-    name: str = "ecdfs_only"
-    only_ecdfs: bool = True
-
-
-@dataclass
-class DzGap0p2(Default):
-    name: str = "dz_gap_0p2"
+class DzGap0p1(Default):
+    name: str = "dz_gap_0p1"
     fg_zmin: float = 0.2
     fg_zmax: float = 0.5
-    bg_zmin: float = 0.7
-    bg_zmax: float = 1.5
+    bg_zmin: float = 0.6
+    bg_zmax: float = 1.4
 
 
 @dataclass
@@ -497,29 +480,22 @@ class DzGap0p3(Default):
     fg_zmin: float = 0.2
     fg_zmax: float = 0.5
     bg_zmin: float = 0.8
-    bg_zmax: float = 1.5
+    bg_zmax: float = 1.4
 
 
 @dataclass
-class PZStrict(Default):
-    name: str = "pz_strict"
-    pz_max_sig: float = 0.1
-    pz_max_diff: float = 0.1
+class PZRelaxed(Default):
+    name: str = "pz_relaxed"
+    pz_max_sig: float = 0.2
+    pz_max_diff: float = 0.2
 
 
 @dataclass
-class FgLowZ(Default):
-    name: str = "fg_low_z"
-    fg_zmin: float = 0.1
-    fg_zmax: float = 0.4
-    bg_zmin: float = 0.5
-    bg_zmax: float = 1.5
-
+class FGRedSequence(Default):
+    name: str = "fg_red_sequence"
+    fg_query: str = "(g_absmag - r_absmag) > 0.5"
 
 @dataclass
-class BgLowZ(Default):
-    name: str = "bg_low_z"
-    fg_zmin: float = 0.1
-    fg_zmax: float = 0.4
-    bg_zmin: float = 0.5
-    bg_zmax: float = 1.0
+class FGBlueCloud(Default):
+    name: str = "fg_blue_cloud"
+    fg_query: str = "(g_absmag - r_absmag) < 0.5"

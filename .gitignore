@@ -208,7 +208,7 @@ __marimo__/
 
 data/*
 figures/*
-results/*
+results*/*
 !**/.gitkeep
 results_archive
 

@@ -29,20 +29,15 @@ class Stacker:
     # Stacking options
     free_fluxes: bool = False  # Whether to use "free" flux variants
     snr_max: float = 100  # Maximum SNR (sets error floor)
+    weighted: bool = True  # Whether to use weighted averages in bins
 
     # Defining bins
     bin_by_angle: bool = False  # If false, bin by physical impact parameter
-    r_bins: list = field(default_factory=lambda: [0.5, 1, 2, 4, 8, 12])  # Mpc or arcmin
-    r_min: float = 0.1  # Minimum radius (Mpc or arcmin)
-    r_max: float = 10  # Maximum radius (Mpc or arcmin)
-    n_bins: int | dict = 10
-
-    # Toggle tomographic selection
-    tomographic: bool = True  # If false, use all pairs with z_bg > z_fg + dz_min
-    dz_min: float = 0.2
+    r_bins: list = field(
+        default_factory=lambda: [0.5, 1, 2, 3, 4, 5, 6]
+    )
 
     # For null tests
-    fg_stars: bool = False  # Whether to use stars as foreground objects
     randomize_positions: bool = False  # Whether to randomize positions
     random_seed: int = 42  # Random seed for position randomization
 
@@ -50,7 +45,7 @@ class Stacker:
     bootstrap: bool = True  # If false, use analytic errors
 
     # Plotting settings
-    r_norm: float = 9  # Radius (Mpc or arcmin) beyond which is used to normalize
+    r_norm: float = 4.9  # Radius (Mpc or arcmin) beyond which is used to normalize
 
     def __post_init__(self) -> None:
         """Post-init processing."""
@@ -85,12 +80,6 @@ class Stacker:
         self.file_stack_shear_flipped = self.out_dir / "stack_shear_flipped.npz"
         self.file_stack_shear_fig = self.out_dir / "fig_shear_stack.pdf"
 
-        # Check for not-yet-implemented options
-        if not self.tomographic:
-            raise NotImplementedError("Non-tomographic selection not yet implemented.")
-        if self.fg_stars:
-            raise NotImplementedError("Using stars as foreground not yet implemented.")
-
         self._flipped = False
 
     def _save_config(self) -> None:
@@ -99,35 +88,10 @@ class Stacker:
             config["selector"] = asdict(self.selector)
             yaml.dump(config, file, sort_keys=False)
 
-    def _get_bins(self, band: str) -> tuple[np.ndarray, np.ndarray]:
+    def _get_bins(self) -> tuple[np.ndarray, np.ndarray]:
         """Get bin edges."""
-        if isinstance(self.n_bins, dict):
-            n_bins = self.n_bins[band]
-        else:
-            n_bins = self.n_bins
-
-        # r = np.sqrt(np.linspace(self.r_min**2, self.r_max**2, n_bins))
-        # r = np.concatenate(  # Extra small-scale bins
-        #    (np.linspace(0, r[1], 5), r[2:])
-        # )
-        # r = np.linspace(self.r_min, self.r_max, n_bins)
-
-        """# Generate bins in log space
-        centers = np.linspace(np.log10(self.r_min), np.log10(self.r_max), n_bins)
-        edges = 0.5 * (centers[1:] + centers[:-1])
-        dx = edges[1] - edges[0]
-        edges = np.insert(edges, 0, edges[0] - dx)
-        edges = np.append(edges, edges[-1] + dx)
-
-        # Now convert to linear space
-        centers = 10**centers
-        edges = 10**edges"""
-
-        # edges = np.logspace(self.r_min, self.r_max, n_bins)
-        # centers = 0.5 * (edges[1:] + edges[:-1])
-
+        # Create densely-packed bins that are centered on the specified r_bins
         centers = np.array(self.r_bins)
-
         edges = [centers[0] - (centers[1] - centers[0]) / 2]
         for i in range(len(centers)):
             edges.append(centers[i] + (centers[i] - edges[i]))
@@ -172,6 +136,10 @@ class Stacker:
         fg_xy = np.column_stack((fg_ra * np.cos(np.deg2rad(fg_dec)), fg_dec))
         bg_xy = np.column_stack((bg_ra * np.cos(np.deg2rad(bg_dec)), bg_dec))
 
+        # Determine max distance to consider
+        bin_centers, bin_edges = self._get_bins()
+        r_max = bin_edges[-1]
+
         # Build spatial KDTree on background
         bg_tree = cKDTree(bg_xy)
 
@@ -181,10 +149,10 @@ class Stacker:
             dA = cosmo.angular_diameter_distance(self._foreground["z_phot"]).value
 
             # Compute max separation in degrees for each foreground galaxy
-            max_sep_deg = np.rad2deg(self.r_max / dA)
+            max_sep_deg = np.rad2deg(r_max / dA)
         else:
             # If binning by angle, max sep. same for all foreground galaxies
-            max_sep_deg = np.full(len(fg_xy), self.r_max / 60)  # arcmin to deg
+            max_sep_deg = np.full(len(fg_xy), r_max / 60)  # arcmin to deg
 
         pairs = []
         separation = []
@@ -248,7 +216,10 @@ class Stacker:
             # Calculate weights
             xi = x[in_bin]
             ei = err[in_bin]
-            wi = 1 / (ei**2 + xi.var())
+            if self.weighted:
+                wi = 1 / (ei**2 + xi.var())
+            else:
+                wi = np.ones_like(xi)
 
             # Weighted average and error
             if self.bootstrap:
@@ -273,7 +244,7 @@ class Stacker:
             print(f" {band}", end="", flush=True)
 
             # Set bins
-            bin_centers, bin_edges = self._get_bins(band)
+            bin_centers, bin_edges = self._get_bins()
             results[f"{band}_bin_centers"] = bin_centers
 
             # Get columns
@@ -353,7 +324,7 @@ class Stacker:
 
             # Set bins
             band1, band2 = color.split("-")
-            bin_centers, bin_edges = self._get_bins(band1)
+            bin_centers, bin_edges = self._get_bins()
             results[f"{color}_bin_centers"] = bin_centers
 
             if flux:
@@ -512,7 +483,7 @@ class Stacker:
             return
         self._stack_fluxes(force=force_stacker)
         self._stack_mags(force=force_stacker)
-        # self._stack_fcolors(force=force_stacker)
+        self._stack_fcolors(force=force_stacker)
         self._stack_mcolors(force=force_stacker)
         # self._stack_shear()
 
@@ -561,7 +532,7 @@ class Stacker:
             force_stacker
             or not self.file_stack_fluxes.exists()
             or not self.file_stack_mags.exists()
-            # or not self.file_stack_fcolors.exists()
+            or not self.file_stack_fcolors.exists()
             or not self.file_stack_mcolors.exists()
             # or not self.file_stack_shear.exists()
         ):
@@ -572,11 +543,11 @@ class Stacker:
             print("Stacking already done for variant:", self.name)
 
         # Check for expected output files and run flipped
-        if (
+        if False and (
             force_stacker
             or not self.file_stack_fluxes_flipped.exists()
             or not self.file_stack_mags_flipped.exists()
-            # or not self.file_stack_fcolors_flipped.exists()
+            or not self.file_stack_fcolors_flipped.exists()
             or not self.file_stack_mcolors_flipped.exists()
             # or not self.file_stack_shear_flipped.exists()
         ):
@@ -600,14 +571,14 @@ class Stacker:
             )
             or not self.file_stack_fluxes_fig.exists()
             or not self.file_stack_mags_fig.exists()
-            # or not self.file_stack_fcolors_fig.exists()
+            or not self.file_stack_fcolors_fig.exists()
             or not self.file_stack_mcolors_fig.exists()
             # or not self.file_stack_shear_fig.exists()
         ):
             print("Creating figures for variant:", self.name)
             self._create_figure("fluxes", force=force_plotter)
             self._create_figure("mags", force=force_plotter)
-            # self._create_figure("fcolors", force=force_plotter)
+            self._create_figure("fcolors", force=force_plotter)
             self._create_figure("mcolors", force=force_plotter)
             # self._create_figure("shear", force=force_plotter)
         else:
@@ -621,18 +592,6 @@ Default = Stacker
 
 
 # Other variants
-@dataclass
-class Nbins5(Default):
-    name: str = "nbins_5"
-    n_bins: int | dict = 5
-
-
-@dataclass
-class Nbins20(Default):
-    name: str = "nbins_20"
-    n_bins: int | dict = 20
-
-
 @dataclass
 class UnCleaned(Default):
     name: str = "uncleaned"
@@ -655,40 +614,6 @@ class SNRMax500(Default):
 class SNRMaxInf(Default):
     name: str = "snr_max_inf"
     snr_max: float = np.inf
-
-
-@dataclass
-class BinByImpact(Default):
-    name: str = "bin_by_impact"
-    bin_by_angle: bool = True
-    r_max: float = 60.0  # arcmin
-
-
-@dataclass
-class FreeFluxes(Default):
-    name: str = "free_fluxes"
-    free_fluxes: bool = True
-
-
-@dataclass
-class NullGalaxiesFlip(Default):
-    name: str = "null_galaxies_flip"
-    fg_stars: bool = False
-    flip: bool = True
-
-
-@dataclass
-class NullStars(Default):
-    name: str = "null_stars"
-    fg_stars: bool = True
-    flip: bool = False
-
-
-@dataclass
-class NullStarsFlip(Default):
-    name: str = "null_stars_flip"
-    fg_stars: bool = True
-    flip: bool = True
 
 
 @dataclass

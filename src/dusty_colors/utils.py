@@ -120,7 +120,7 @@ def clean_data(
     return data
 
 
-def load_stack(stack, stack_type, r_norm=3):
+def load_stack(stack, stack_type, r_norm=3, correct_flip=False):
     stack_dict = {}
 
     # Load both data files
@@ -130,12 +130,13 @@ def load_stack(stack, stack_type, r_norm=3):
         raise FileNotFoundError(
             f"Stack file not found: {stack / f'stack_{stack_type}.npz'}"
         )
-    try:
-        data_flipped = np.load(stack / f"stack_{stack_type}_flipped.npz")
-    except FileNotFoundError:
-        raise FileNotFoundError(
-            f"Flipped stack file not found: {stack / f'stack_{stack_type}_flipped.npz'}"
-        )
+    if correct_flip:
+        try:
+            data_flipped = np.load(stack / f"stack_{stack_type}_flipped.npz")
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f"Flipped stack file not found: {stack / f'stack_{stack_type}_flipped.npz'}"
+            )
 
     # Get the keys
     keys = [key.split("_")[0] for key in data.keys() if key.endswith("_avg")]
@@ -147,21 +148,24 @@ def load_stack(stack, stack_type, r_norm=3):
         # Load averages and errors
         x = data[f"{key}_avg"]
         err = data[f"{key}_err"]
-        x_f = data_flipped[f"{key}_avg"]
-        err_f = data_flipped[f"{key}_err"]
+        if correct_flip:
+            x_f = data_flipped[f"{key}_avg"]
+            err_f = data_flipped[f"{key}_err"]
 
         if stack_type == "mags" or stack_type == "mcolors":
-            # Correct signal using flipped data
-            x = x - x_f
-            err = np.sqrt(err**2 + err_f**2)
+            if correct_flip:
+                # Correct signal using flipped data
+                x = x - x_f
+                err = np.sqrt(err**2 + err_f**2)
 
             # Normalize to large radii
             norm = np.nanmean(x[r > r_norm])
             x -= norm
         else:
-            # Correct signal using flipped data
-            x = x / x_f
-            err = x / x_f * np.sqrt((err / x) ** 2 + (err_f / x_f) ** 2)
+            if correct_flip:
+                # Correct signal using flipped data
+                x = x / x_f
+                err = x / x_f * np.sqrt((err / x) ** 2 + (err_f / x_f) ** 2)
 
             # Normalize to large radii
             norm = np.nanmean(x[r > r_norm])
