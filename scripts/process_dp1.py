@@ -234,5 +234,34 @@ cat["stellar_mass"] = np.full(len(cat), np.nan)
 cat.loc[mask, "stellar_mass"] = stellar_mass
 
 
+# Save jackknife regions
+def find_center(field):
+    sub = cat.query(f"field == '{field}'")
+    return np.median(sub.coord_ra), np.median(sub.coord_dec)
+
+
+new_centers = {field: find_center(field) for field in cat.field.unique()}
+
+
+def determine_region(row):
+    x, y = row.coord_ra, row.coord_dec
+    x -= new_centers[row.field][0]
+    y -= new_centers[row.field][1]
+    theta = np.arctan2(y, x)
+    if theta > -np.pi / 6 and theta < np.pi / 2:
+        region = 0
+    elif theta > -5 * np.pi / 6 and theta < -np.pi / 6:
+        region = 2
+    else:
+        region = 1
+
+    region += {"ECDFS": 0, "EDFS": 3, "Rubin SV 95 -25": 6}[row.field]
+
+    return region
+
+
+cat["jackknife_region"] = cat.apply(determine_region, axis=1)
+
+
 # Save the processed catalog
 cat.to_parquet("data/dp1_catalog_processed.parquet")

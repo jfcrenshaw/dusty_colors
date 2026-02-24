@@ -437,6 +437,7 @@ class BrightCut16(Default):
     name: str = "bright_cut_16"
     bright_cut: float = 16.0
 
+
 @dataclass
 class BrightCut20(Default):
     name: str = "bright_cut_20"
@@ -454,6 +455,7 @@ class BrightMaskR60(Default):
     name: str = "bright_mask_r60"
     bright_radius: float = 60.0
 
+
 @dataclass
 class BlendCut100(Default):
     name: str = "blend_cut_100"
@@ -464,6 +466,7 @@ class BlendCut100(Default):
 class BlendCut10(Default):
     name: str = "blend_cut_10"
     blendedness_cut: float = 0.10
+
 
 @dataclass
 class DzGap0p1(Default):
@@ -495,7 +498,14 @@ class FGRedSequence(Default):
     name: str = "fg_red_sequence"
     fg_query: str = "(g_absmag - r_absmag) > 0.5"
 
+
 @dataclass
 class FGBlueCloud(Default):
     name: str = "fg_blue_cloud"
     fg_query: str = "(g_absmag - r_absmag) < 0.5"
+
+
+@dataclass
+class OnlyECDFS(Default):
+    name: str = "only_ecdfs"
+    only_ecdfs: bool = True

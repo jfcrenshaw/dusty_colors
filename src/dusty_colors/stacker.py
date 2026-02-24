@@ -33,19 +33,20 @@ class Stacker:
 
     # Defining bins
     bin_by_angle: bool = False  # If false, bin by physical impact parameter
-    r_bins: list = field(
-        default_factory=lambda: [0.5, 1, 2, 3, 4, 5, 6]
-    )
+    r_bins: list = field(default_factory=lambda: [0.5, 1, 2, 3, 4, 5, 6])
 
     # For null tests
     randomize_positions: bool = False  # Whether to randomize positions
     random_seed: int = 42  # Random seed for position randomization
 
     # How to calculate errors
-    bootstrap: bool = True  # If false, use analytic errors
+    bootstrap: bool = False  # If false, use analytic errors
 
     # Plotting settings
     r_norm: float = 4.9  # Radius (Mpc or arcmin) beyond which is used to normalize
+
+    # Exclude a jackknife region
+    exclude_jk: int | None = None
 
     def __post_init__(self) -> None:
         """Post-init processing."""
@@ -515,6 +516,21 @@ class Stacker:
         else:
             self._background: pd.DataFrame = pd.read_parquet(
                 self.in_dir / "galaxy_catalog_background.parquet"
+            )
+        if self.exclude_jk is not None:
+            if self.exclude_jk not in self._foreground["jackknife_region"].unique():
+                raise ValueError(
+                    f"Jackknife region {self.exclude_jk} not found in foreground sample"
+                )
+            self._foreground = self._foreground.query(
+                f"jackknife_region != {self.exclude_jk}"
+            )
+            if self.exclude_jk not in self._background["jackknife_region"].unique():
+                raise ValueError(
+                    f"Jackknife region {self.exclude_jk} not found in background sample"
+                )
+            self._background = self._background.query(
+                f"jackknife_region != {self.exclude_jk}"
             )
 
         # Create output directory

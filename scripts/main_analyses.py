@@ -81,6 +81,10 @@ variants = [
         name="extra_bin",
         r_bins=[0.3, 0.5, 1, 2, 3, 4, 5, 6],
     ),
+    stacker.Default(
+        name="only_ecdfs",
+        selector=selector.OnlyECDFS(),
+    ),
 ]
 
 for variant in variants:
