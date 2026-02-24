@@ -160,7 +160,9 @@ def load_stack(stack, stack_type, r_norm=3, correct_flip=False):
 
             # Normalize to large radii
             norm = np.nanmean(x[r > r_norm])
+            norm_err = np.nanstd(x[r > r_norm]) / np.sqrt(np.sum(r > r_norm))
             x -= norm
+            err = np.sqrt(err**2 + norm_err**2)
         else:
             if correct_flip:
                 # Correct signal using flipped data
@@ -168,9 +170,11 @@ def load_stack(stack, stack_type, r_norm=3, correct_flip=False):
                 err = x / x_f * np.sqrt((err / x) ** 2 + (err_f / x_f) ** 2)
 
             # Normalize to large radii
-            norm = np.nanmean(x[r > r_norm])
-            x /= norm
-            err /= norm
+            if r_norm is not None:
+                norm = np.nanmean(x[r > r_norm])
+                norm_err = np.nanstd(x[r > r_norm]) / np.sqrt(np.sum(r > r_norm))
+                err = x / norm * np.sqrt((err / x) ** 2 + (norm_err / norm) ** 2)
+                x /= norm
 
         # Store in dictionary
         stack_dict[f"{key}_bin_centers"] = r
