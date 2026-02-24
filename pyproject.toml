@@ -25,6 +25,7 @@ dependencies = [
     "healsparse>=1.11",
     "kcorrect>=5.1",
     "seaborn>=0.13",
+    "dust_extinction>=1.7",
 ]
 
 [tool.setuptools.packages.find]

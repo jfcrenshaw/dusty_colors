@@ -77,6 +77,10 @@ variants = [
         name="fg_blue_cloud",
         selector=selector.FGBlueCloud(),
     ),
+    stacker.Default(
+        name="extra_bin",
+        r_bins=[0.3, 0.5, 1, 2, 3, 4, 5, 6],
+    ),
 ]
 
 for variant in variants:
