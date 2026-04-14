@@ -184,10 +184,15 @@ def load_stack(stack, stack_type, r_norm=3, correct_flip=False):
     return stack_dict
 
 
-def plot_stack(stack, stack_type, r_norm=3):
+def plot_stack(stack, stack_type, r_norm=3, correct_flip=False):
     fig, ax = plt.subplots(figsize=(4, 3), dpi=150)
 
-    stack_data = load_stack(stack, stack_type=stack_type, r_norm=r_norm)
+    stack_data = load_stack(
+        stack,
+        stack_type=stack_type,
+        r_norm=r_norm,
+        correct_flip=correct_flip,
+    )
     keys = [key.split("_")[0] for key in stack_data.keys() if key.endswith("_avg")]
 
     for key in keys:

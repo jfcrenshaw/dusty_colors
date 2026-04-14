@@ -13,6 +13,8 @@ from .selector import Default as DefaultSelector
 from .selector import Selector
 from .utils import plot_stack
 
+import matplotlib.pyplot as plt
+
 
 @dataclass
 class Stacker:
@@ -45,8 +47,9 @@ class Stacker:
     # Plotting settings
     r_norm: float = 4.9  # Radius (Mpc or arcmin) beyond which is used to normalize
 
-    # Exclude a jackknife region
+    # Exclude (or limit to) a jackknife region
     exclude_jk: int | None = None
+    select_jk: int | None = None
 
     def __post_init__(self) -> None:
         """Post-init processing."""
@@ -103,8 +106,7 @@ class Stacker:
     def _find_pairs(self, force: bool = False) -> None:
         """Find foreground-background pairs."""
         # Skip time-intensive pair finding if already done
-        file = self.file_pairs_flipped if self._flipped else self.file_pairs
-        if file.exists() and not force:
+        if self.file_pairs.exists() and not force:
             print(f"   pairs already found, loading from {self.file_pairs}")
             data = np.load(self.file_pairs)
             self._pairs = data["pairs"]
@@ -182,7 +184,9 @@ class Stacker:
         # Save results
         self._pairs = np.array(pairs)
         self._separation = np.array(separation)
-        np.savez_compressed(file, pairs=self._pairs, separation=self._separation)
+        np.savez_compressed(
+            self.file_pairs, pairs=self._pairs, separation=self._separation
+        )
         print(f"{len(self._pairs)} found")
 
     def _calc_binned_stats(
@@ -235,7 +239,7 @@ class Stacker:
 
         return np.array(avgs), np.array(errs)
 
-    def _stack_flux_or_mag(self, flux: bool) -> dict:
+    def _stack_flux_or_mag(self, flux: bool, flipped: bool) -> dict:
         """Perform stacking of either fluxes or magnitudes."""
         # Container for results
         results = {}
@@ -254,8 +258,12 @@ class Stacker:
                 col += "Flux"
             else:
                 col += "Mag"
-            x = self._background[col].iloc[self._pairs[:, 1]].values
-            err = self._background[col + "Err"].iloc[self._pairs[:, 1]].values
+            if not flipped:
+                x = self._background[col].iloc[self._pairs[:, 1]].values
+                err = self._background[col + "Err"].iloc[self._pairs[:, 1]].values
+            else:
+                x = self._foreground[col].iloc[self._pairs[:, 0]].values
+                err = self._foreground[col + "Err"].iloc[self._pairs[:, 0]].values
 
             # Filtering
             mask = np.isfinite(x) & np.isfinite(err) & (err > 0)
@@ -276,19 +284,17 @@ class Stacker:
 
         return results
 
-    def _stack_fluxes(self, force: bool = False) -> None:
+    def _stack_fluxes(self, force: bool = False, flipped: bool = False) -> None:
         """Stack fluxes."""
         # Skip time-intensive stacking if already done
-        file = (
-            self.file_stack_fluxes_flipped if self._flipped else self.file_stack_fluxes
-        )
+        file = self.file_stack_fluxes_flipped if flipped else self.file_stack_fluxes
         if file.exists() and not force:
             print("   fluxes already stacked")
             return
 
         # Otherwise, move forward with finding new pairs
         print("   stacking fluxes...", end="", flush=True)
-        results = self._stack_flux_or_mag(flux=True)
+        results = self._stack_flux_or_mag(flux=True, flipped=flipped)
 
         # Save all results
         np.savez_compressed(file, **results)  # type: ignore
@@ -296,17 +302,17 @@ class Stacker:
 
         self._new_flux_stack = True
 
-    def _stack_mags(self, force: bool = False) -> None:
+    def _stack_mags(self, force: bool = False, flipped: bool = False) -> None:
         """Stack magnitudes."""
         # Skip time-intensive stacking if already done
-        file = self.file_stack_mags_flipped if self._flipped else self.file_stack_mags
+        file = self.file_stack_mags_flipped if flipped else self.file_stack_mags
         if file.exists() and not force:
             print("   mags already stacked")
             return
 
         # Otherwise, move forward with finding new pairs
         print("   stacking mags...", end="", flush=True)
-        results = self._stack_flux_or_mag(flux=False)
+        results = self._stack_flux_or_mag(flux=False, flipped=flipped)
 
         # Save all results
         np.savez_compressed(file, **results)  # type: ignore
@@ -314,7 +320,7 @@ class Stacker:
 
         self._new_mags_stack = True
 
-    def _stack_colors(self, flux: bool) -> dict:
+    def _stack_colors(self, flux: bool, flipped: bool) -> dict:
         """Perform stacking of either flux ratios or color differences."""
         # Container for results
         results = {}
@@ -339,10 +345,16 @@ class Stacker:
                 col1 += "Flux"
                 col2 += "Flux"
 
-                x1 = self._background[col1].iloc[self._pairs[:, 1]].values
-                err1 = self._background[col1 + "Err"].iloc[self._pairs[:, 1]].values
-                x2 = self._background[col2].iloc[self._pairs[:, 1]].values
-                err2 = self._background[col2 + "Err"].iloc[self._pairs[:, 1]].values
+                if not flipped:
+                    x1 = self._background[col1].iloc[self._pairs[:, 1]].values
+                    err1 = self._background[col1 + "Err"].iloc[self._pairs[:, 1]].values
+                    x2 = self._background[col2].iloc[self._pairs[:, 1]].values
+                    err2 = self._background[col2 + "Err"].iloc[self._pairs[:, 1]].values
+                else:
+                    x1 = self._foreground[col1].iloc[self._pairs[:, 0]].values
+                    err1 = self._foreground[col1 + "Err"].iloc[self._pairs[:, 0]].values
+                    x2 = self._foreground[col2].iloc[self._pairs[:, 0]].values
+                    err2 = self._foreground[col2 + "Err"].iloc[self._pairs[:, 0]].values
 
                 # Apply SNR maximum
                 err1 = x1 * np.clip(err1 / x1, 1 / self.snr_max, None)
@@ -354,8 +366,16 @@ class Stacker:
 
             else:
                 # Retrieve columns
-                x = self._background[f"{color}"].iloc[self._pairs[:, 1]].values
-                err = self._background[f"{color}_Err"].iloc[self._pairs[:, 1]].values
+                if not flipped:
+                    x = self._background[f"{color}"].iloc[self._pairs[:, 1]].values
+                    err = (
+                        self._background[f"{color}_Err"].iloc[self._pairs[:, 1]].values
+                    )
+                else:
+                    x = self._foreground[f"{color}"].iloc[self._pairs[:, 0]].values
+                    err = (
+                        self._foreground[f"{color}_Err"].iloc[self._pairs[:, 0]].values
+                    )
 
                 # Apply SNR maximum
                 err = np.clip(
@@ -375,21 +395,17 @@ class Stacker:
 
         return results
 
-    def _stack_fcolors(self, force: bool = False) -> None:
+    def _stack_fcolors(self, force: bool = False, flipped: bool = False) -> None:
         """Stack colors using flux ratios."""
         # Skip time-intensive stacking if already done
-        file = (
-            self.file_stack_fcolors_flipped
-            if self._flipped
-            else self.file_stack_fcolors
-        )
+        file = self.file_stack_fcolors_flipped if flipped else self.file_stack_fcolors
         if file.exists() and not force:
             print("   flux-colors already stacked")
             return
 
         # Otherwise, move forward with finding new pairs
         print("   stacking flux-colors...", end="", flush=True)
-        results = self._stack_colors(flux=True)
+        results = self._stack_colors(flux=True, flipped=flipped)
 
         # Save all results
         np.savez_compressed(file, **results)  # type: ignore
@@ -397,21 +413,17 @@ class Stacker:
 
         self._new_fcolors_stack = True
 
-    def _stack_mcolors(self, force: bool = False) -> None:
+    def _stack_mcolors(self, force: bool = False, flipped: bool = False) -> None:
         """Stack colors using magnitude differences."""
         # Skip time-intensive stacking if already done
-        file = (
-            self.file_stack_mcolors_flipped
-            if self._flipped
-            else self.file_stack_mcolors
-        )
+        file = self.file_stack_mcolors_flipped if flipped else self.file_stack_mcolors
         if file.exists() and not force:
             print("   magnitude-colors already stacked")
             return
 
         # Otherwise, move forward with finding new pairs
         print("   stacking magnitude-colors...", end="", flush=True)
-        results = self._stack_colors(flux=False)
+        results = self._stack_colors(flux=False, flipped=flipped)
 
         # Save all results
         np.savez_compressed(file, **results)  # type: ignore
@@ -419,7 +431,7 @@ class Stacker:
 
         self._new_mcolors_stack = True
 
-    def _stack_shear(self, force: bool = False) -> None:
+    def _stack_shear(self, force: bool = False, flipped: bool = False) -> None:
         """Stack shear."""
         raise NotImplementedError("Shear stacking not yet implemented.")
 
@@ -471,21 +483,23 @@ class Stacker:
         fig = plot_stack(self.out_dir, stack_type=stack_type, r_norm=self.r_norm)
         fig.savefig(fig_file, bbox_inches="tight")
         print(f"   saved figure to {fig_file}")
+        plt.close(fig)
 
     def _run_stacking(
         self,
         force_stacker: bool = False,
         force_pairer: bool = False,
+        flipped: bool = False,
     ) -> None:
         self._save_config()
         self._find_pairs(force=force_pairer)
         if len(self._pairs) == 0:
             print("   no pairs found, skipping stacking")
             return
-        self._stack_fluxes(force=force_stacker)
-        self._stack_mags(force=force_stacker)
-        self._stack_fcolors(force=force_stacker)
-        self._stack_mcolors(force=force_stacker)
+        self._stack_fluxes(force=force_stacker, flipped=flipped)
+        self._stack_mags(force=force_stacker, flipped=flipped)
+        self._stack_fcolors(force=force_stacker, flipped=flipped)
+        self._stack_mcolors(force=force_stacker, flipped=flipped)
         # self._stack_shear()
 
         print("   stacking complete")
@@ -517,21 +531,25 @@ class Stacker:
             self._background: pd.DataFrame = pd.read_parquet(
                 self.in_dir / "galaxy_catalog_background.parquet"
             )
-        if self.exclude_jk is not None:
-            if self.exclude_jk not in self._foreground["jackknife_region"].unique():
+        if self.exclude_jk is not None and self.select_jk is not None:
+            raise ValueError("Cannot both exclude and select a jackknife region")
+        if self.exclude_jk is not None or self.select_jk is not None:
+            region = self.exclude_jk if self.exclude_jk is not None else self.select_jk
+            if region not in self._foreground["jackknife_region"].unique():
                 raise ValueError(
-                    f"Jackknife region {self.exclude_jk} not found in foreground sample"
+                    f"Jackknife region {region} not found in foreground sample"
                 )
-            self._foreground = self._foreground.query(
-                f"jackknife_region != {self.exclude_jk}"
-            )
-            if self.exclude_jk not in self._background["jackknife_region"].unique():
+            if region not in self._background["jackknife_region"].unique():
                 raise ValueError(
-                    f"Jackknife region {self.exclude_jk} not found in background sample"
+                    f"Jackknife region {region} not found in background sample"
                 )
-            self._background = self._background.query(
-                f"jackknife_region != {self.exclude_jk}"
+            query = (
+                f"jackknife_region != {region}"
+                if self.exclude_jk is not None
+                else f"jackknife_region == {region}"
             )
+            self._foreground = self._foreground.query(query)
+            self._background = self._background.query(query)
 
         # Create output directory
         self.out_dir.mkdir(parents=True, exist_ok=True)
@@ -559,7 +577,7 @@ class Stacker:
             print("Stacking already done for variant:", self.name)
 
         # Check for expected output files and run flipped
-        if False and (
+        if (
             force_stacker
             or not self.file_stack_fluxes_flipped.exists()
             or not self.file_stack_mags_flipped.exists()
@@ -568,9 +586,7 @@ class Stacker:
             # or not self.file_stack_shear_flipped.exists()
         ):
             print("Running FLIPPED stacking for variant:", self.name)
-            self._flipped = True
-            self._foreground, self._background = self._background, self._foreground
-            self._run_stacking(force_stacker=force_stacker)
+            self._run_stacking(force_stacker=force_stacker, flipped=True)
         else:
             print("FLIPPED stacking already done for variant:", self.name)
 
