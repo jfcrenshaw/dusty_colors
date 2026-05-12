@@ -7,7 +7,6 @@ from astropy.table import Table, join
 from healsparse import HealSparseMap
 from kcorrect.kcorrect import Kcorrect
 from pathlib import Path
-from scipy.spatial import ConvexHull
 
 from dusty_colors.utils import fields, flux_to_mag, root
 
@@ -228,52 +227,6 @@ for i, band in enumerate("ugrizy"):
     cat.loc[mask, f"{band}_absmag"] = absmag[:, i]
 cat["stellar_mass"] = np.full(len(cat), np.nan)
 cat.loc[mask, "stellar_mass"] = stellar_mass
-
-
-# Save jackknife regions
-def find_center(field):
-    sub = cat.query(f"field == '{field}'")
-    return np.median(sub.coord_ra), np.median(sub.coord_dec)
-
-
-centers = {field: find_center(field) for field in cat.field.unique()}
-radii = {}
-for field in centers:
-    sub = cat.query(f"field == '{field}'")
-    x = sub.coord_ra - centers[field][0]
-    y = sub.coord_dec - centers[field][1]
-
-    # Determine maximum radius of circle inscribed in points
-    hull = ConvexHull(np.column_stack((x, y)))
-    A = hull.equations[:, :-1]  # facet normals, shape (nfacets, dim)
-    c = hull.equations[:, -1]  # offsets
-    r = np.min(-c / np.linalg.norm(A, axis=1))
-    radii[field] = r
-
-
-def determine_region(row, N: int = 6):
-    # Get coordinates relative to field center
-    x, y = row.coord_ra, row.coord_dec
-    x -= centers[row.field][0]
-    y -= centers[row.field][1]
-    r = np.sqrt(x**2 + y**2)
-    theta = np.arctan2(y, x)
-
-    # Central region
-    if N > 3 and r < radii[row.field] / np.sqrt(N - 1):
-        region = 0
-    elif N > 3:
-        region = np.digitize(theta, np.linspace(-np.pi, np.pi, N))
-    else:
-        region = np.digitize(theta, np.linspace(-np.pi, np.pi, N + 1)) - 1
-
-    region += {"ECDFS": 0, "EDFS": N, "Rubin SV 95 -25": 2 * N}[row.field]
-
-    return region
-
-
-cat["jackknife_region"] = cat.apply(determine_region, axis=1)
-
 
 # Save the processed catalog
 cat.to_parquet("data/dp1_catalog_processed.parquet")

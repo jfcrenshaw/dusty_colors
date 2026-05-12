@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import yaml
 from astropy.coordinates import SkyCoord
+from scipy.spatial import ConvexHull
 
 from .utils import clean_data, select_ecdfs
 
@@ -62,8 +63,12 @@ class Selector:
     clean_outliers: bool = True  # Remove outliers from background?
 
     # Queries for custom cuts
+    query: str | None = None
     fg_query: str | None = None
     bg_query: str | None = None
+
+    # Number of jackknife regions to assign per field
+    N_jackknife_per_field: int = 3
 
     def __post_init__(self) -> None:
         """Post-init processing."""
@@ -212,6 +217,48 @@ class Selector:
         fig.savefig(self.file_figure_photoz, dpi=500, bbox_inches="tight")
         print(f"   saved figure to {self.file_figure_photoz}")
 
+    def assign_jackknife_regions(self, cat: pd.DataFrame) -> pd.DataFrame:
+        # Save jackknife regions
+        def find_center(field):
+            sub = cat.query(f"field == '{field}'")
+            return np.median(sub.coord_ra), np.median(sub.coord_dec)
+
+        centers = {field: find_center(field) for field in cat.field.unique()}
+        radii = {}
+        for field in centers:
+            sub = cat.query(f"field == '{field}'")
+            x = sub.coord_ra - centers[field][0]
+            y = sub.coord_dec - centers[field][1]
+
+            # Determine maximum radius of circle inscribed in points
+            hull = ConvexHull(np.column_stack((x, y)))
+            A = hull.equations[:, :-1]  # facet normals, shape (nfacets, dim)
+            c = hull.equations[:, -1]  # offsets
+            r = np.min(-c / np.linalg.norm(A, axis=1))
+            radii[field] = r
+
+        def determine_region(row, N: int = self.N_jackknife_per_field):
+            # Get coordinates relative to field center
+            x, y = row.coord_ra, row.coord_dec
+            x -= centers[row.field][0]
+            y -= centers[row.field][1]
+            r = np.sqrt(x**2 + y**2)
+            theta = np.arctan2(y, x)
+
+            # Central region
+            if N > 3 and r < radii[row.field] / np.sqrt(N - 1):
+                region = 0
+            elif N > 3:
+                region = np.digitize(theta, np.linspace(-np.pi, np.pi, N))
+            else:
+                region = np.digitize(theta, np.linspace(-np.pi, np.pi, N + 1)) - 1
+
+            region += {"ECDFS": 0, "EDFS": N, "Rubin SV 95 -25": 2 * N}[row.field]
+
+            return region
+
+        cat["jackknife_region"] = cat.apply(determine_region, axis=1)
+
     def run(self, force: bool = False) -> None:
         """Run selection."""
         # Create output directory
@@ -312,6 +359,9 @@ class Selector:
             galaxies = cat.query("refExtendedness > 0.5")
             print(f"   stars/galaxies: {len(stars)}, {len(galaxies)}")
 
+            # Assign jackknife regions
+            self.assign_jackknife_regions(galaxies)
+
             # Photo-z quality cut
             galaxies_pzcut = self.cut_photoz(galaxies)
             print("   after photo-z quality cut:", len(galaxies))
@@ -329,12 +379,15 @@ class Selector:
             print("   background galaxies:", len(bg_cat))
 
             # Custom queries
+            if self.query is not None:
+                fg_cat = fg_cat.query(self.query)
+                bg_cat = bg_cat.query(self.query)
             if self.fg_query is not None:
                 fg_cat = fg_cat.query(self.fg_query)
-                print("   foreground galaxies after custom query:", len(fg_cat))
             if self.bg_query is not None:
                 bg_cat = bg_cat.query(self.bg_query)
-                print("   background galaxies after custom query:", len(bg_cat))
+            print("   foreground galaxies after custom query:", len(fg_cat))
+            print("   background galaxies after custom query:", len(bg_cat))
 
             # Clean the catalogs
             print("   cleaning the foreground...")

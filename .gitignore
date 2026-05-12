@@ -209,6 +209,7 @@ __marimo__/
 data/*
 figures/*
 results*/*
+old_results/
 !**/.gitkeep
 OLD
 

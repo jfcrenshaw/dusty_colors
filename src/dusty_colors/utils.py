@@ -224,3 +224,26 @@ def plot_stack(stack, stack_type, r_norm=3, correct_flip=False):
     ax.set(xlabel="Impact parameter [Mpc]")
 
     return fig
+
+
+def load_jackknives(path, stack_type="fcolors", r_norm=None, correct_flip=True):
+    # Get all the subdirectories
+    dirs = Path(path).glob("stacks/jackknife_*")
+
+    # Load sub-stacks
+    substacks = [
+        load_stack(
+            subdir,
+            stack_type=stack_type,
+            r_norm=r_norm,
+            correct_flip=correct_flip,
+        )
+        for subdir in dirs
+    ]
+
+    # Collect results
+    results = {
+        key: np.stack([stack[key] for stack in substacks]) for key in substacks[0]
+    }
+
+    return results

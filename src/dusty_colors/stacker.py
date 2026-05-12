@@ -32,10 +32,11 @@ class Stacker:
     free_fluxes: bool = False  # Whether to use "free" flux variants
     snr_max: float = 100  # Maximum SNR (sets error floor)
     weighted: bool = True  # Whether to use weighted averages in bins
+    r_aper: float = 3.0  # Aperture radius (Mpc) for background normalization
 
     # Defining bins
     bin_by_angle: bool = False  # If false, bin by physical impact parameter
-    r_bins: list = field(default_factory=lambda: [0.5, 1, 2, 3, 4, 5, 6])
+    r_bins: list | np.ndarray = field(default_factory=lambda: np.geomspace(2e-2, 1, 5))
 
     # For null tests
     randomize_positions: bool = False  # Whether to randomize positions
@@ -45,7 +46,7 @@ class Stacker:
     bootstrap: bool = False  # If false, use analytic errors
 
     # Plotting settings
-    r_norm: float = 4.9  # Radius (Mpc or arcmin) beyond which is used to normalize
+    r_norm: float = 0.8  # Radius (Mpc or arcmin) beyond which is used to normalize
 
     # Exclude (or limit to) a jackknife region
     exclude_jk: int | None = None
@@ -141,7 +142,8 @@ class Stacker:
 
         # Determine max distance to consider
         bin_centers, bin_edges = self._get_bins()
-        r_max = bin_edges[-1]
+        # Extend search to aperture radius so aperture averages can be computed
+        r_max = self.r_aper if not self.bin_by_angle else bin_edges[-1]
 
         # Build spatial KDTree on background
         bg_tree = cKDTree(bg_xy)
@@ -239,10 +241,65 @@ class Stacker:
 
         return np.array(avgs), np.array(errs)
 
+    def _compute_aperture_avg(
+        self,
+        x: np.ndarray,
+        err: np.ndarray,
+        i_source: np.ndarray,
+        valid: np.ndarray,
+        n_source: int,
+    ) -> np.ndarray:
+        """Mean (or weighted mean) observable per source galaxy across all valid pairs within r_aper."""
+        valid_i = i_source[valid]
+        valid_x = x[valid]
+        valid_err = err[valid]
+
+        count = np.bincount(valid_i, minlength=n_source).astype(float)
+        has_pairs = count > 0
+        x_aper = np.full(n_source, np.nan)
+
+        if not self.weighted:
+            x_sum = np.bincount(valid_i, weights=valid_x, minlength=n_source)
+            x_aper[has_pairs] = x_sum[has_pairs] / count[has_pairs]
+        else:
+            # Variance of x per source galaxy (population variance, matching _calc_binned_stats)
+            x_sum = np.bincount(valid_i, weights=valid_x, minlength=n_source)
+            x_sq_sum = np.bincount(valid_i, weights=valid_x**2, minlength=n_source)
+            x_mean = np.zeros(n_source)
+            x_sq_mean = np.zeros(n_source)
+            x_mean[has_pairs] = x_sum[has_pairs] / count[has_pairs]
+            x_sq_mean[has_pairs] = x_sq_sum[has_pairs] / count[has_pairs]
+            # Clamp to zero to guard against floating-point cancellation
+            x_var = np.maximum(x_sq_mean - x_mean**2, 0.0)
+
+            # Per-pair weights: 1 / (ei^2 + var of x around this source)
+            w = 1.0 / (valid_err**2 + x_var[valid_i])
+            wx_sum = np.bincount(valid_i, weights=w * valid_x, minlength=n_source)
+            w_sum = np.bincount(valid_i, weights=w, minlength=n_source)
+            x_aper[has_pairs] = wx_sum[has_pairs] / w_sum[has_pairs]
+
+        return x_aper
+
+    def _footprint_mask(self, flipped: bool) -> np.ndarray:
+        """Boolean mask over pairs keeping only those whose lens is fully inside the footprint."""
+        r_cut = 20  # 20 - 3.33 * self.r_aper
+        if not flipped:
+            r_center = self._foreground["r_center"].values
+            idx = self._pairs[:, 0]
+        else:
+            r_center = self._background["r_center"].values
+            idx = self._pairs[:, 1]
+        return r_center[idx] < r_cut
+
     def _stack_flux_or_mag(self, flux: bool, flipped: bool) -> dict:
         """Perform stacking of either fluxes or magnitudes."""
         # Container for results
         results = {}
+
+        # Restrict to pairs whose lens galaxy has a complete aperture inside the footprint
+        fp_mask = self._footprint_mask(flipped)
+        pairs = self._pairs[fp_mask]
+        separation = self._separation[fp_mask]
 
         # Loop over bands
         for band in "griz":
@@ -259,23 +316,48 @@ class Stacker:
             else:
                 col += "Mag"
             if not flipped:
-                x = self._background[col].iloc[self._pairs[:, 1]].values
-                err = self._background[col + "Err"].iloc[self._pairs[:, 1]].values
+                x = self._background[col].iloc[pairs[:, 1]].values
+                err = self._background[col + "Err"].iloc[pairs[:, 1]].values
+                i_source = pairs[:, 0]
+                n_source = len(self._foreground)
             else:
-                x = self._foreground[col].iloc[self._pairs[:, 0]].values
-                err = self._foreground[col + "Err"].iloc[self._pairs[:, 0]].values
+                x = self._foreground[col].iloc[pairs[:, 0]].values
+                err = self._foreground[col + "Err"].iloc[pairs[:, 0]].values
+                i_source = pairs[:, 1]
+                n_source = len(self._background)
 
-            # Filtering
+            # Identify valid pairs
             mask = np.isfinite(x) & np.isfinite(err) & (err > 0)
-            x = x[mask]
-            err = err[mask]
-            sep = self._separation[mask]
 
-            # Apply SNR maximum
+            # Apply SNR maximum (only to err; x is unchanged for aperture averaging)
             if flux:
-                err = x * np.clip(err / x, 1 / self.snr_max, None)
+                err = np.where(
+                    mask, x * np.clip(err / x, 1 / self.snr_max, None), np.nan
+                )
             else:
-                err = np.clip(err, 2.5 / np.log(10) * 1 / self.snr_max, None)
+                err = np.where(
+                    mask, np.clip(err, 2.5 / np.log(10) / self.snr_max, None), np.nan
+                )
+
+            # Normalize each pair's observable by the aperture mean of its source galaxy.
+            # x_aper[i] = mean observable of all valid background galaxies within r_aper
+            # of foreground galaxy i. Pairs outside the stack bins (r > bin_edges[-1])
+            # still contribute to the aperture mean even though they won't be binned.
+            if not self.bin_by_angle:
+                x_aper = self._compute_aperture_avg(x, err, i_source, mask, n_source)
+                x_aper_per_pair = x_aper[i_source]
+                if flux:
+                    x = x / x_aper_per_pair
+                    err = err / np.abs(x_aper_per_pair)
+                else:
+                    x = x - x_aper_per_pair
+                    # err is unchanged for a difference
+
+            # Filter after normalization (NaN x_aper propagates to x/err here)
+            final_mask = np.isfinite(x) & np.isfinite(err) & (err > 0)
+            x = x[final_mask]
+            err = err[final_mask]
+            sep = separation[final_mask]
 
             # Calculate binned stats
             avgs, errs = self._calc_binned_stats(sep, x, err, bin_edges)
@@ -325,6 +407,11 @@ class Stacker:
         # Container for results
         results = {}
 
+        # Restrict to pairs whose lens galaxy has a complete aperture inside the footprint
+        fp_mask = self._footprint_mask(flipped)
+        pairs = self._pairs[fp_mask]
+        separation = self._separation[fp_mask]
+
         # Loop over bands
         for color in ["g-r", "r-i", "i-z", "g-i"]:
             print(f" {color}", end="", flush=True)
@@ -333,6 +420,14 @@ class Stacker:
             band1, band2 = color.split("-")
             bin_centers, bin_edges = self._get_bins()
             results[f"{color}_bin_centers"] = bin_centers
+
+            # Source galaxy indices for aperture averaging
+            if not flipped:
+                i_source = pairs[:, 0]
+                n_source = len(self._foreground)
+            else:
+                i_source = pairs[:, 1]
+                n_source = len(self._background)
 
             if flux:
                 # Retrieve columns
@@ -346,47 +441,57 @@ class Stacker:
                 col2 += "Flux"
 
                 if not flipped:
-                    x1 = self._background[col1].iloc[self._pairs[:, 1]].values
-                    err1 = self._background[col1 + "Err"].iloc[self._pairs[:, 1]].values
-                    x2 = self._background[col2].iloc[self._pairs[:, 1]].values
-                    err2 = self._background[col2 + "Err"].iloc[self._pairs[:, 1]].values
+                    x1 = self._background[col1].iloc[pairs[:, 1]].values
+                    err1 = self._background[col1 + "Err"].iloc[pairs[:, 1]].values
+                    x2 = self._background[col2].iloc[pairs[:, 1]].values
+                    err2 = self._background[col2 + "Err"].iloc[pairs[:, 1]].values
                 else:
-                    x1 = self._foreground[col1].iloc[self._pairs[:, 0]].values
-                    err1 = self._foreground[col1 + "Err"].iloc[self._pairs[:, 0]].values
-                    x2 = self._foreground[col2].iloc[self._pairs[:, 0]].values
-                    err2 = self._foreground[col2 + "Err"].iloc[self._pairs[:, 0]].values
+                    x1 = self._foreground[col1].iloc[pairs[:, 0]].values
+                    err1 = self._foreground[col1 + "Err"].iloc[pairs[:, 0]].values
+                    x2 = self._foreground[col2].iloc[pairs[:, 0]].values
+                    err2 = self._foreground[col2 + "Err"].iloc[pairs[:, 0]].values
 
                 # Apply SNR maximum
                 err1 = x1 * np.clip(err1 / x1, 1 / self.snr_max, None)
                 err2 = x2 * np.clip(err2 / x2, 1 / self.snr_max, None)
 
-                # Calculate color and error
+                # Calculate flux ratio and its error
                 x = x1 / x2
                 err = x * np.sqrt((err1 / x1) ** 2 + (err2 / x2) ** 2)
 
             else:
-                # Retrieve columns
+                # Retrieve pre-computed color columns
                 if not flipped:
-                    x = self._background[f"{color}"].iloc[self._pairs[:, 1]].values
-                    err = (
-                        self._background[f"{color}_Err"].iloc[self._pairs[:, 1]].values
-                    )
+                    x = self._background[f"{color}"].iloc[pairs[:, 1]].values
+                    err = self._background[f"{color}_Err"].iloc[pairs[:, 1]].values
                 else:
-                    x = self._foreground[f"{color}"].iloc[self._pairs[:, 0]].values
-                    err = (
-                        self._foreground[f"{color}_Err"].iloc[self._pairs[:, 0]].values
-                    )
+                    x = self._foreground[f"{color}"].iloc[pairs[:, 0]].values
+                    err = self._foreground[f"{color}_Err"].iloc[pairs[:, 0]].values
 
                 # Apply SNR maximum
-                err = np.clip(
-                    err, np.sqrt(2) * 2.5 / np.log(10) * 1 / self.snr_max, None
-                )
+                err = np.clip(err, np.sqrt(2) * 2.5 / np.log(10) / self.snr_max, None)
 
-            # Filtering
+            # Identify valid pairs
             mask = np.isfinite(x) & np.isfinite(err) & (err > 0)
-            x = x[mask]
-            err = err[mask]
-            sep = self._separation[mask]
+
+            # Normalize each pair's color by its source galaxy's aperture mean color.
+            # For flux: stack (f1/f2) / mean(f1/f2 in aperture).
+            # For mags: stack (m1-m2) - mean(m1-m2 in aperture).
+            if not self.bin_by_angle:
+                x_aper = self._compute_aperture_avg(x, err, i_source, mask, n_source)
+                x_aper_per_pair = x_aper[i_source]
+                if flux:
+                    x = x / x_aper_per_pair
+                    err = err / np.abs(x_aper_per_pair)
+                else:
+                    x = x - x_aper_per_pair
+                    # err is unchanged for a difference
+
+            # Filter after normalization
+            final_mask = np.isfinite(x) & np.isfinite(err) & (err > 0)
+            x = x[final_mask]
+            err = err[final_mask]
+            sep = separation[final_mask]
 
             # Calculate binned stats
             avgs, errs = self._calc_binned_stats(sep, x, err, bin_edges)
