@@ -32,7 +32,8 @@ class Stacker:
     free_fluxes: bool = False  # Whether to use "free" flux variants
     snr_max: float = 100  # Maximum SNR (sets error floor)
     weighted: bool = True  # Whether to use weighted averages in bins
-    r_aper: float = 3.0  # Aperture radius (Mpc) for background normalization
+    r_aper_min: float = 2.5  # Inner aperture radius (Mpc) for background normalization
+    r_aper_max: float = 3.5  # Outer aperture radius (Mpc) for background normalization
 
     # Defining bins
     bin_by_angle: bool = False  # If false, bin by physical impact parameter
@@ -143,7 +144,7 @@ class Stacker:
         # Determine max distance to consider
         bin_centers, bin_edges = self._get_bins()
         # Extend search to aperture radius so aperture averages can be computed
-        r_max = self.r_aper if not self.bin_by_angle else bin_edges[-1]
+        r_max = self.r_aper_max if not self.bin_by_angle else bin_edges[-1]
 
         # Build spatial KDTree on background
         bg_tree = cKDTree(bg_xy)
@@ -248,11 +249,14 @@ class Stacker:
         i_source: np.ndarray,
         valid: np.ndarray,
         n_source: int,
+        sep: np.ndarray,
     ) -> np.ndarray:
-        """Mean (or weighted mean) observable per source galaxy across all valid pairs within r_aper."""
-        valid_i = i_source[valid]
-        valid_x = x[valid]
-        valid_err = err[valid]
+        """Mean (or weighted mean) observable per source galaxy across valid pairs in the aperture annulus."""
+        aper_mask = (sep >= self.r_aper_min) & (sep <= self.r_aper_max)
+        combined = valid & aper_mask
+        valid_i = i_source[combined]
+        valid_x = x[combined]
+        valid_err = err[combined]
 
         count = np.bincount(valid_i, minlength=n_source).astype(float)
         has_pairs = count > 0
@@ -340,11 +344,12 @@ class Stacker:
                 )
 
             # Normalize each pair's observable by the aperture mean of its source galaxy.
-            # x_aper[i] = mean observable of all valid background galaxies within r_aper
-            # of foreground galaxy i. Pairs outside the stack bins (r > bin_edges[-1])
-            # still contribute to the aperture mean even though they won't be binned.
+            # x_aper[i] = mean observable of all valid background galaxies within the
+            # aperture annulus [r_aper_min, r_aper_max] of foreground galaxy i.
             if not self.bin_by_angle:
-                x_aper = self._compute_aperture_avg(x, err, i_source, mask, n_source)
+                x_aper = self._compute_aperture_avg(
+                    x, err, i_source, mask, n_source, separation
+                )
                 x_aper_per_pair = x_aper[i_source]
                 if flux:
                     x = x / x_aper_per_pair
@@ -478,7 +483,9 @@ class Stacker:
             # For flux: stack (f1/f2) / mean(f1/f2 in aperture).
             # For mags: stack (m1-m2) - mean(m1-m2 in aperture).
             if not self.bin_by_angle:
-                x_aper = self._compute_aperture_avg(x, err, i_source, mask, n_source)
+                x_aper = self._compute_aperture_avg(
+                    x, err, i_source, mask, n_source, separation
+                )
                 x_aper_per_pair = x_aper[i_source]
                 if flux:
                     x = x / x_aper_per_pair
