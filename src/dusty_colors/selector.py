@@ -562,3 +562,11 @@ class FGBlueCloud(Default):
 class OnlyECDFS(Default):
     name: str = "only_ecdfs"
     only_ecdfs: bool = True
+
+
+@dataclass
+class Unclean(Default):
+    name: str = "unclean"
+    clean_nonuniformity: bool = False
+    clean_ztrends: bool = False
+    clean_outliers: bool = False
