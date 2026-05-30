@@ -26,14 +26,15 @@ class Selector:
     only_ecdfs: bool = False
 
     # Cuts on faint end
-    i_cut: float = 24.0  # Maximum i-band magnitude
+    r_cut: float = 24.0  # Maximum r-band magnitude
     min_snr_u: float = 1
     min_snr_g: float = 5
-    min_snr_r: float = 5
-    min_snr_i: float = 10
+    min_snr_r: float = 10
+    min_snr_i: float = 5
     min_snr_z: float = 5
     min_snr_y: float = 1
     min_pixel_quantile: float = 0.05  # Minimum pixel depth quantile to accept
+    min_pixel_occupancy: int = 30
 
     # Cuts on bright end
     bright_cut: float = 18.0  # Don't use objects brighter than this in i (mag)
@@ -296,12 +297,18 @@ class Selector:
                 cat = cat.query(f"({band}5_pixel > 20) & ({band}5_pixel < 30)")
             print("   after cutting bad pixels:", len(cat))
 
+            # Cut sparse pixels
+            pixel_counts = cat["pixel"].value_counts()
+            mask = pixel_counts >= self.min_pixel_occupancy
+            cat = cat[cat["pixel"].isin(pixel_counts[mask].index)]
+            print("   after cutting sparse pixels:", len(cat))
+
             # Apply depth cut
-            # Need to determine minimum depth such that the i_cut
-            # matches the specified i-band SNR cut
-            i5_cut = self.i_cut + 2.5 * np.log10(self.min_snr_i / 5)
-            cat = cat.query(f"i5_pixel > {i5_cut}")
-            for band in "ugrzy":
+            # Need to determine minimum depth such that the r_cut
+            # matches the specified r-band SNR cut
+            r5_cut = self.r_cut + 2.5 * np.log10(self.min_snr_r / 5)
+            cat = cat.query(f"r5_pixel > {r5_cut}")
+            for band in "ugizy":
                 qcut = np.quantile(
                     np.unique(cat[f"{band}5_pixel"]),
                     self.min_pixel_quantile,
@@ -314,14 +321,14 @@ class Selector:
                 cat = cat.query(f"{band}_snr > @self.min_snr_{band}")
             print("   after SNR cuts:", len(cat))
 
-            # Cut on i-band magnitude
-            cat = cat.query("i_cModelMag < @self.i_cut")
-            print("   after i-band magnitude cut:", len(cat))
+            # Cut on r-band magnitude
+            cat = cat.query("r_cModelMag < @self.r_cut")
+            print("   after r-band magnitude cut:", len(cat))
 
             # Bright mask
             if self.bright_radius > 0:
                 # Create SkyCoord objects for bright sources and all sources
-                bright = cat.query("i_cModelMag < @self.bright_cut")
+                bright = cat.query("r_cModelMag < @self.bright_cut")
                 bright_coords = SkyCoord(
                     ra=bright["coord_ra"].values,
                     dec=bright["coord_dec"].values,
@@ -347,7 +354,7 @@ class Selector:
                 cat = cat[mask]
                 print("   after bright mask:", len(cat))
             else:
-                cat = cat.query("i_cModelMag > @self.bright_cut")
+                cat = cat.query("r_cModelMag > @self.bright_cut")
                 print("   after brightness cut:", len(cat))
 
             # Cut on blendedness
@@ -434,33 +441,33 @@ Default = Selector
 
 # Other variants
 @dataclass
-class iCut23p0(Default):
-    name: str = "i_cut_23p0"
-    i_cut: float = 23.0
+class rCut23p0(Default):
+    name: str = "r_cut_23p0"
+    r_cut: float = 23.0
 
 
 @dataclass
-class iCut23p5(Default):
-    name: str = "i_cut_23p5"
-    i_cut: float = 23.5
+class rCut23p5(Default):
+    name: str = "r_cut_23p5"
+    r_cut: float = 23.5
 
 
 @dataclass
-class iCut24p5(Default):
-    name: str = "i_cut_24p5"
-    i_cut: float = 24.5
+class rCut24p5(Default):
+    name: str = "r_cut_24p5"
+    r_cut: float = 24.5
 
 
 @dataclass
-class iCut25p0(Default):
-    name: str = "i_cut_25p0"
-    i_cut: float = 25.0
+class rCut25p0(Default):
+    name: str = "r_cut_25p0"
+    r_cut: float = 25.0
 
 
 @dataclass
-class SNRi20(Default):
-    name: str = "snr_i_20"
-    min_snr_i: float = 20.0
+class SNRr20(Default):
+    name: str = "snr_r_20"
+    min_snr_r: float = 20.0
 
 
 @dataclass
@@ -468,8 +475,8 @@ class SNRRelaxed(Default):
     name: str = "snr_relaxed"
     min_snr_u: float = 5.0
     min_snr_g: float = 1.0
-    min_snr_r: float = 1.0
-    min_snr_i: float = 10.0
+    min_snr_r: float = 10.0
+    min_snr_i: float = 1.0
     min_snr_z: float = 1.0
     min_snr_y: float = 5.0
 
@@ -479,8 +486,8 @@ class SNRConservative(Default):
     name: str = "snr_conservative"
     min_snr_u: float = 5.0
     min_snr_g: float = 10.0
-    min_snr_r: float = 10.0
-    min_snr_i: float = 20.0
+    min_snr_r: float = 20.0
+    min_snr_i: float = 10.0
     min_snr_z: float = 10.0
     min_snr_y: float = 5.0
 

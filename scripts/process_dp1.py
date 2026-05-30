@@ -3,10 +3,12 @@
 import healpy as hp
 import numpy as np
 from astropy import units as u
+from astropy.cosmology import Planck18 as cosmo
 from astropy.table import Table, join
 from healsparse import HealSparseMap
 from kcorrect.kcorrect import Kcorrect
 from pathlib import Path
+from scipy.optimize import brentq
 
 from dusty_colors.utils import fields, flux_to_mag, root
 
@@ -110,14 +112,15 @@ cat["shear_err"] = np.sqrt(shape_noise**2 + measurement_err**2)
 # --------------------------
 # Set resolutions for healsparse maps
 nside_coverage = 32
-nside_sparse = 131072
+nside_sparse = 1024
 
 # Assign each galaxy to a pixel
 pixel_indices = hp.ang2pix(
     nside_sparse,
-    np.deg2rad(cat["coord_dec"]),
-    np.deg2rad(cat["coord_ra"]),
+    cat["coord_ra"],
+    cat["coord_dec"],
     lonlat=True,
+    nest=True,
 )
 cat["pixel"] = pixel_indices
 
@@ -227,6 +230,78 @@ for i, band in enumerate("ugrizy"):
     cat.loc[mask, f"{band}_absmag"] = absmag[:, i]
 cat["stellar_mass"] = np.full(len(cat), np.nan)
 cat.loc[mask, "stellar_mass"] = stellar_mass
+
+
+# Estimate halo mass using SMHM from https://arxiv.org/abs/1205.5807
+def calc_stellar_mass(halo_mass, redshift):
+    """SMHM from https://arxiv.org/abs/1205.5807"""
+    # Params from Table 1
+    M10 = 11.590
+    M11 = 1.195
+    N10 = 0.0351
+    N11 = -0.0247
+    beta10 = 1.376
+    beta11 = -0.826
+    gamma10 = 0.608
+    gamma11 = 0.329
+
+    # Calculate redshift-dependent functions
+    zfactor = redshift / (1 + redshift)
+    M1 = 10 ** (M10 + M11 * zfactor)
+    N = N10 + N11 * zfactor
+    beta = beta10 + beta11 * zfactor
+    gamma = gamma10 + gamma11 * zfactor
+
+    M = halo_mass / M1
+    SM = 2 * halo_mass * N * (M**-beta + M**gamma) ** -1
+
+    return SM
+
+
+def estimate_halo_mass(Mstar, redshift, logMhalo_min=9.0, logMhalo_max=14.0):
+    """
+    Estimate log10 halo mass by solving:
+        stellar_mass(Mhalo, redshift) = Mstar
+
+    Assumes:
+        logMstar is log10(Mstar / Msun)
+        stellar_mass takes linear Mhalo in Msun
+        stellar_mass returns linear Mstar in Msun
+    """
+    logMstar = np.log10(Mstar)
+
+    def objective(logMhalo):
+        Mhalo = 10**logMhalo
+        model_logMstar = np.log10(calc_stellar_mass(Mhalo, redshift))
+        return model_logMstar - logMstar
+
+    try:
+        log_halo_mass = brentq(objective, logMhalo_min, logMhalo_max)
+        return 10**log_halo_mass
+    except ValueError:
+        return np.nan
+
+
+cat["halo_mass"] = np.full(len(cat), np.nan)
+cat.loc[mask, "halo_mass"] = [
+    estimate_halo_mass(Mstar, z)
+    for Mstar, z in zip(cat.loc[mask, "stellar_mass"], cat.loc[mask, "z_phot"])
+]
+
+
+# Estimate R200 using Planck cosmology
+def calc_virial_radius(Mhalo, z):
+    rhoc = cosmo.critical_density(z).to_value(u.M_sun / u.Mpc**3)
+    R200 = (3 * Mhalo / (800 * np.pi * rhoc)) ** (1 / 3)
+    return R200
+
+
+cat["R200"] = np.full(len(cat), np.nan)
+cat.loc[mask, "R200"] = [
+    calc_virial_radius(Mhalo, z)
+    for Mhalo, z in zip(cat.loc[mask, "halo_mass"], cat.loc[mask, "z_phot"])
+]
+
 
 # Save the processed catalog
 cat.to_parquet("data/dp1_catalog_processed.parquet")
