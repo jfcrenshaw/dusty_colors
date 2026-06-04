@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Analysis of dusty galaxy colors"
 readme = "README.md"
 license = {file = "LICENSE"}
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.3",
     "scipy>=1.16",

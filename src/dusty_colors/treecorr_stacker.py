@@ -1,8 +1,9 @@
-"""TreeCorr-based color stacking."""
+"""TreeCorr-based color stacking on prepared canonical samples."""
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -13,8 +14,7 @@ import treecorr
 import yaml
 from astropy.cosmology import Planck18 as cosmo
 
-from .selector import Default as DefaultSelector
-from .selector import Selector
+from .observables import build_observable
 
 ColorMode = Literal["fcolors", "mcolors"]
 StackDirection = Literal["forward", "flipped"]
@@ -59,38 +59,29 @@ class _JackknifeStats:
 
 @dataclass
 class TreeCorrStacker:
-    """Stack colors around foreground galaxies using TreeCorr.
+    """Measure color excess profiles with the TreeCorr estimator.
 
-    The implemented estimator is the one described in ``paper.tex``:
-
-    ``E(c) = (forward_stack - flipped_stack) - reference_annulus``.
-
-    Forward stacks measure background-galaxy colors around foreground galaxies.
-    Flipped stacks measure foreground-galaxy colors over the same foreground-lens
-    pair geometry.  In both cases TreeCorr bins pairs by foreground-lens-plane
-    impact parameter using ``Rlens`` and foreground ``D_A(z_phot)``.
-
-    When ``random_correction`` is enabled, the estimator subtracts the same
-    forward-minus-flipped stack measured with random positions drawn uniformly
-    from the selected HEALPix footprint, patch by patch.
+    The stacker consumes prepared canonical foreground/background tables. It does
+    not prepare catalogs, select samples, or manage pipeline-level manifests.
+    Expected canonical columns are ``ra``, ``dec``, ``z_phot`` on foreground
+    samples, ``ra`` and ``dec`` on background samples, and either
+    ``flux_<band>``/``fluxerr_<band>`` or ``mag_<band>``/``magerr_<band>`` for
+    requested colors.
     """
 
-    name: str = "treecorr"
-    selector: Selector = field(default_factory=DefaultSelector)
-
-    clean_foreground: bool = False
-    clean_background: bool = True
+    foreground: pd.DataFrame
+    background: pd.DataFrame
+    out_dir: Path
+    footprint: pd.DataFrame | None = None
+    config: Mapping[str, Any] = field(default_factory=dict)
 
     colors: tuple[str, ...] = ("g-r", "r-i", "i-z", "g-i")
     modes: tuple[ColorMode, ...] = ("fcolors", "mcolors")
-    flux_type: str = "gaap1p0"
-    snr_max: float = 100.0
-
     r_bin_edges: list[float] | np.ndarray = field(
-        default_factory=lambda: np.geomspace(0.005, 1.0, 6)
+        default_factory=lambda: np.geomspace(5.0, 1000.0, 6)
     )
-    r_aper_min: float = 2.0
-    r_aper_max: float = 3.0
+    reference_annulus: tuple[float, float] = (2000.0, 4000.0)
+    snr_max: float = 100.0
 
     bin_slop: float = 0.0
     num_threads: int | None = None
@@ -98,230 +89,214 @@ class TreeCorrStacker:
     patch_col: str = "jackknife_region"
     cross_patch_weight: str = "match"
     random_correction: bool = True
-    random_multiplier: float = 10.0
+    random_multiplier: float = 5.0
     random_seed: int = 42
     random_nside: int = 1024
 
-    exclude_jk: int | None = None
-    select_jk: int | None = None
-
     def __post_init__(self) -> None:
-        root = Path(__file__).resolve().parents[2]
-        self.in_dir = root / f"results/catalogs/{self.selector.name}"
-        self.out_dir = root / f"results/stacks/{self.name}"
+        self.out_dir = Path(self.out_dir)
+        self.foreground = self.foreground.reset_index(drop=True).copy()
+        self.background = self.background.reset_index(drop=True).copy()
+        self.footprint = (
+            None
+            if self.footprint is None
+            else self.footprint.reset_index(drop=True).copy()
+        )
 
-        self.file_config = self.out_dir / "config_stacker.yaml"
-        self.file_stack_fcolors = self.out_dir / "stack_fcolors.npz"
-        self.file_stack_mcolors = self.out_dir / "stack_mcolors.npz"
+        self.colors = tuple(self.colors)
+        self.modes = tuple(self.modes)
+        self.r_bin_edges = np.asarray(self.r_bin_edges, dtype=float)
+        self.reference_annulus = (
+            float(self.reference_annulus[0]),
+            float(self.reference_annulus[1]),
+        )
 
         self._fg_pos_cat: Any | None = None
         self._bg_pos_cat: Any | None = None
         self._random_fg_pos_cat: Any | None = None
         self._random_bg_pos_cat: Any | None = None
-        self._footprint_catalog: pd.DataFrame | None = None
+        self._random_foreground: pd.DataFrame | None = None
+        self._random_background: pd.DataFrame | None = None
+        self._random_foreground_da: np.ndarray | None = None
         self._treecorr_patch_col = "_treecorr_patch"
 
-    def run(
-        self,
-        force_selector: bool = False,
-        force_stacker: bool = False,
-    ) -> None:
-        """Run the TreeCorr stacker."""
-        self._load_catalogs(force_selector)
+    @classmethod
+    def from_sample_dir(
+        cls,
+        sample_dir: str | Path,
+        out_dir: str | Path,
+        stack_config: Mapping[str, Any],
+        *,
+        footprint_path: str | Path | None = None,
+    ) -> TreeCorrStacker:
+        """Build a stacker from a prepared sample directory."""
+        sample_dir = Path(sample_dir)
+        footprint = None
+        if footprint_path is not None and Path(footprint_path).exists():
+            footprint = pd.read_parquet(footprint_path)
+
+        config = dict(stack_config)
+        if "reference_annulus" in config:
+            config["reference_annulus"] = tuple(config["reference_annulus"])
+        return cls(
+            foreground=pd.read_parquet(sample_dir / "foreground.parquet"),
+            background=pd.read_parquet(sample_dir / "background.parquet"),
+            footprint=footprint,
+            out_dir=Path(out_dir),
+            config=config,
+            **config,
+        )
+
+    def run(self, *, force: bool = False) -> None:
+        """Run all requested stack modes."""
         self.out_dir.mkdir(parents=True, exist_ok=True)
         self._save_config()
 
-        if not force_stacker and all(path.exists() for path in self._expected_files()):
-            print(f"TreeCorr stacking already done for variant: {self.name}")
+        if not force and all(path.exists() for path in self._expected_files()):
+            print(f"TreeCorr stacking already done: {self.out_dir}")
             return
 
-        print("Running TreeCorr stacking for variant:", self.name)
+        self._load_samples()
         bins = self._radial_bins()
         ref_bin = self._reference_bin()
+
+        print(f"Running TreeCorr stacking: {self.out_dir}")
         for mode in self.modes:
             self._run_mode(mode, bins, ref_bin)
         print("   TreeCorr stacking complete")
 
-    def _run_mode(
-        self, mode: ColorMode, bins: list[_RadialBin], ref_bin: _RadialBin
-    ) -> None:
-        results = {}
-
-        print(f"   stacking {mode} with TreeCorr...", end="", flush=True)
-        for color in self.colors:
-            print(f" {color}", end="", flush=True)
-            foreground = self._observable(self._foreground, color, mode)
-            background = self._observable(self._background, color, mode)
-
-            forward = self._profile(background, bins, ref_bin, mode, "forward")
-            flipped = self._profile(foreground, bins, ref_bin, mode, "flipped")
-            random_forward = None
-            random_flipped = None
-            if self.random_correction:
-                random_forward = self._profile(
-                    background, bins, ref_bin, mode, "forward", random=True
-                )
-                random_flipped = self._profile(
-                    foreground, bins, ref_bin, mode, "flipped", random=True
-                )
-
-            results.update(
-                self._result(
-                    color,
-                    bins,
-                    mode,
-                    forward,
-                    flipped,
-                    random_forward,
-                    random_flipped,
-                )
-            )
-        print(".")
-
-        np.savez_compressed(self._stack_file(mode), **results)
-
-    def _load_catalogs(self, force_selector: bool) -> None:
-        self.selector.run(force=force_selector)
-        self._footprint_catalog = None
-        self._foreground = self._read_catalog("foreground", self.clean_foreground)
-        self._background = self._read_catalog("background", self.clean_background)
-
-        if self.exclude_jk is not None and self.select_jk is not None:
-            raise ValueError("Cannot both exclude and select a jackknife region")
-        if self.exclude_jk is not None or self.select_jk is not None:
-            region = self.exclude_jk if self.exclude_jk is not None else self.select_jk
-            query = (
-                f"{self.patch_col} != {region}"
-                if self.exclude_jk is not None
-                else f"{self.patch_col} == {region}"
-            )
-            self._foreground = self._foreground.query(query).reset_index(drop=True)
-            self._background = self._background.query(query).reset_index(drop=True)
-
+    def _load_samples(self) -> None:
+        self._validate_samples()
         self._foreground_da = cosmo.angular_diameter_distance(
-            self._foreground["z_phot"].to_numpy(float)
-        ).value
+            self.foreground["z_phot"].to_numpy(float)
+        ).to_value("kpc")
         self._drop_bad_positions()
         self._setup_jackknife()
         self._setup_randoms()
-        self._fg_pos_cat = None
-        self._bg_pos_cat = None
-        self._random_fg_pos_cat = None
-        self._random_bg_pos_cat = None
 
-    def _read_catalog(self, sample: str, cleaned: bool) -> pd.DataFrame:
-        if sample == "all":
-            return pd.read_parquet(self.in_dir / "galaxy_catalog.parquet").reset_index(
-                drop=True
-            )
-        suffix = "_cleaned" if cleaned else ""
-        path = self.in_dir / f"galaxy_catalog_{sample}{suffix}.parquet"
-        return pd.read_parquet(path).reset_index(drop=True)
+    def _validate_samples(self) -> None:
+        fg_required = {"ra", "dec", "z_phot"}
+        bg_required = {"ra", "dec"}
+        self._require_columns(self.foreground, fg_required, "foreground")
+        self._require_columns(self.background, bg_required, "background")
+        for color in self.colors:
+            for mode in self.modes:
+                self._validate_observable_columns(color, mode)
+
+    def _validate_observable_columns(self, color: str, mode: ColorMode) -> None:
+        for label, catalog in (
+            (f"foreground {color}", self.foreground),
+            (f"background {color}", self.background),
+        ):
+            try:
+                build_observable(
+                    catalog.iloc[:0],
+                    color,
+                    mode,
+                    snr_max=self.snr_max,
+                )
+            except KeyError as exc:
+                raise ValueError(
+                    f"{label} needs either flux or magnitude columns for {mode}"
+                ) from exc
+
+    def _require_columns(
+        self, catalog: pd.DataFrame, columns: set[str], label: str
+    ) -> None:
+        missing = sorted(columns - set(catalog.columns))
+        if missing:
+            raise ValueError(f"{label} is missing required columns: {missing}")
 
     def _drop_bad_positions(self) -> None:
         fg_good = (
-            np.isfinite(self._foreground["coord_ra"].to_numpy(float))
-            & np.isfinite(self._foreground["coord_dec"].to_numpy(float))
+            np.isfinite(self.foreground["ra"].to_numpy(float))
+            & np.isfinite(self.foreground["dec"].to_numpy(float))
             & np.isfinite(self._foreground_da)
             & (self._foreground_da > 0)
         )
-        bg_good = np.isfinite(
-            self._background["coord_ra"].to_numpy(float)
-        ) & np.isfinite(self._background["coord_dec"].to_numpy(float))
+        bg_good = np.isfinite(self.background["ra"].to_numpy(float)) & np.isfinite(
+            self.background["dec"].to_numpy(float)
+        )
 
-        self._foreground = self._foreground.loc[fg_good].reset_index(drop=True)
+        self.foreground = self.foreground.loc[fg_good].reset_index(drop=True)
         self._foreground_da = self._foreground_da[fg_good]
-        self._background = self._background.loc[bg_good].reset_index(drop=True)
+        self.background = self.background.loc[bg_good].reset_index(drop=True)
 
-        if len(self._foreground) == 0 or len(self._background) == 0:
-            raise ValueError(
-                "Foreground and background catalogs must both be non-empty"
-            )
-
-    def _read_footprint_catalog(self, label: str, require_patch: bool) -> pd.DataFrame:
-        if self._footprint_catalog is None:
-            self._footprint_catalog = self._read_catalog("all", cleaned=False)
-        if "pixel" not in self._footprint_catalog:
-            raise ValueError(f"{label} needs a 'pixel' column in the selected catalog")
-        if require_patch and self.patch_col not in self._footprint_catalog:
-            raise ValueError(
-                f"{label} needs patch column '{self.patch_col}' in the selected catalog"
-            )
-        return self._footprint_catalog
+        if len(self.foreground) == 0 or len(self.background) == 0:
+            raise ValueError("Foreground and background samples must both be non-empty")
 
     def _setup_jackknife(self) -> None:
         self._use_jackknife = False
         self._npatch = 1
         if not self.jackknife:
-            self._foreground[self._treecorr_patch_col] = 0
-            self._background[self._treecorr_patch_col] = 0
+            self.foreground[self._treecorr_patch_col] = 0
+            self.background[self._treecorr_patch_col] = 0
             return
 
         if (
-            self.patch_col not in self._foreground
-            or self.patch_col not in self._background
+            self.patch_col not in self.foreground
+            or self.patch_col not in self.background
         ):
             raise ValueError(f"Jackknife patch column '{self.patch_col}' not found")
 
-        fg_patch = self._foreground[self.patch_col].to_numpy(int)
-        bg_patch = self._background[self.patch_col].to_numpy(int)
+        fg_patch = self.foreground[self.patch_col].to_numpy(int)
+        bg_patch = self.background[self.patch_col].to_numpy(int)
         patches = np.intersect1d(np.unique(fg_patch), np.unique(bg_patch))
         if len(patches) < 2:
             raise ValueError(
-                "TreeCorr jackknife covariance needs at least two patches shared "
-                "by the foreground and background catalogs"
+                "TreeCorr jackknife covariance needs at least two shared patches"
             )
 
         fg_keep = np.isin(fg_patch, patches)
         bg_keep = np.isin(bg_patch, patches)
-        n_fg_drop = int(np.sum(~fg_keep))
-        n_bg_drop = int(np.sum(~bg_keep))
-        if n_fg_drop or n_bg_drop:
+        if not np.all(fg_keep) or not np.all(bg_keep):
             print(
                 "   TreeCorr jackknife using "
                 f"{len(patches)} shared patches; dropped "
-                f"{n_fg_drop} foreground and {n_bg_drop} background objects "
-                "outside the shared patch set"
+                f"{int(np.sum(~fg_keep))} foreground and "
+                f"{int(np.sum(~bg_keep))} background objects outside them"
             )
-            self._foreground = self._foreground.loc[fg_keep].reset_index(drop=True)
+            self.foreground = self.foreground.loc[fg_keep].reset_index(drop=True)
             self._foreground_da = self._foreground_da[fg_keep]
-            self._background = self._background.loc[bg_keep].reset_index(drop=True)
+            self.background = self.background.loc[bg_keep].reset_index(drop=True)
 
         patch_map = {patch: i for i, patch in enumerate(patches)}
-        self._foreground[self._treecorr_patch_col] = [
-            patch_map[patch] for patch in self._foreground[self.patch_col].to_numpy(int)
+        self.foreground[self._treecorr_patch_col] = [
+            patch_map[patch] for patch in self.foreground[self.patch_col].to_numpy(int)
         ]
-        self._background[self._treecorr_patch_col] = [
-            patch_map[patch] for patch in self._background[self.patch_col].to_numpy(int)
+        self.background[self._treecorr_patch_col] = [
+            patch_map[patch] for patch in self.background[self.patch_col].to_numpy(int)
         ]
 
         self._npatch = len(patches)
         self._use_jackknife = True
 
     def _setup_randoms(self) -> None:
-        self._random_foreground = None
-        self._random_background = None
-        self._random_foreground_da = None
         if not self.random_correction:
             return
+        if self.footprint is None:
+            raise ValueError("Random correction requires a prepared footprint table")
+        if "pixel" not in self.footprint:
+            raise ValueError("Random correction requires footprint column 'pixel'")
         if self.random_multiplier <= 0:
             raise ValueError("random_multiplier must be positive")
 
-        footprint = self._read_footprint_catalog(
-            "Random correction", require_patch=True
-        )
-
+        footprint = self.footprint
         if getattr(self, "_use_jackknife", False):
+            if self.patch_col not in footprint:
+                raise ValueError(
+                    f"Random correction requires footprint column '{self.patch_col}'"
+                )
             patch_map = dict(
                 zip(
-                    self._foreground[self.patch_col].to_numpy(int),
-                    self._foreground[self._treecorr_patch_col].to_numpy(int),
+                    self.foreground[self.patch_col].to_numpy(int),
+                    self.foreground[self._treecorr_patch_col].to_numpy(int),
                 )
             )
             patch_map.update(
                 zip(
-                    self._background[self.patch_col].to_numpy(int),
-                    self._background[self._treecorr_patch_col].to_numpy(int),
+                    self.background[self.patch_col].to_numpy(int),
+                    self.background[self._treecorr_patch_col].to_numpy(int),
                 )
             )
             footprint = footprint[footprint[self.patch_col].isin(patch_map)]
@@ -337,18 +312,16 @@ class TreeCorrStacker:
             footprint = footprint.assign(**{self._treecorr_patch_col: 0})
 
         pixels_by_patch = {
-            patch: group["pixel"].dropna().to_numpy(int)
+            patch: np.unique(group["pixel"].dropna().to_numpy(int))
             for patch, group in footprint.groupby(self._treecorr_patch_col)
         }
         pixels_by_patch = {
-            patch: np.unique(pixels)
-            for patch, pixels in pixels_by_patch.items()
-            if len(pixels) > 0
+            patch: pixels for patch, pixels in pixels_by_patch.items() if len(pixels)
         }
-        missing = set(self._foreground[self._treecorr_patch_col].unique()) - set(
+        missing = set(self.foreground[self._treecorr_patch_col].unique()) - set(
             pixels_by_patch
         )
-        missing |= set(self._background[self._treecorr_patch_col].unique()) - set(
+        missing |= set(self.background[self._treecorr_patch_col].unique()) - set(
             pixels_by_patch
         )
         if missing:
@@ -356,13 +329,13 @@ class TreeCorrStacker:
 
         rng = np.random.default_rng(self.random_seed)
         self._random_foreground, self._random_foreground_da = self._random_catalog_like(
-            self._foreground,
+            self.foreground,
             self._foreground_da,
             pixels_by_patch,
             rng,
         )
         self._random_background, _ = self._random_catalog_like(
-            self._background,
+            self.background,
             None,
             pixels_by_patch,
             rng,
@@ -395,8 +368,8 @@ class TreeCorrStacker:
             rows.append(
                 pd.DataFrame(
                     {
-                        "coord_ra": ra,
-                        "coord_dec": dec,
+                        "ra": ra,
+                        "dec": dec,
                         self._treecorr_patch_col: int(patch),
                     }
                 )
@@ -442,30 +415,52 @@ class TreeCorrStacker:
                 decs.append(dec[keep])
                 n_have += int(np.sum(keep))
 
-        return (
-            np.concatenate(ras)[:n_random],
-            np.concatenate(decs)[:n_random],
-        )
+        return np.concatenate(ras)[:n_random], np.concatenate(decs)[:n_random]
+
+    def _run_mode(
+        self, mode: ColorMode, bins: list[_RadialBin], ref_bin: _RadialBin
+    ) -> None:
+        results = {}
+
+        print(f"   stacking {mode} with TreeCorr...", end="", flush=True)
+        for color in self.colors:
+            print(f" {color}", end="", flush=True)
+            foreground = self._observable(self.foreground, color, mode)
+            background = self._observable(self.background, color, mode)
+
+            forward = self._profile(background, bins, ref_bin, mode, "forward")
+            flipped = self._profile(foreground, bins, ref_bin, mode, "flipped")
+            random_forward = None
+            random_flipped = None
+            if self.random_correction:
+                random_forward = self._profile(
+                    background, bins, ref_bin, mode, "forward", random=True
+                )
+                random_flipped = self._profile(
+                    foreground, bins, ref_bin, mode, "flipped", random=True
+                )
+
+            results.update(
+                self._result(
+                    color,
+                    bins,
+                    mode,
+                    forward,
+                    flipped,
+                    random_forward,
+                    random_flipped,
+                )
+            )
+        print(".")
+
+        np.savez_compressed(self._stack_file(mode), **results)
 
     def _observable(
         self, catalog: pd.DataFrame, color: str, mode: ColorMode
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        if mode == "mcolors":
-            value = catalog[color].to_numpy(float)
-            err = catalog[f"{color}_Err"].to_numpy(float)
-            floor = np.sqrt(2.0) * 2.5 / np.log(10.0) / self.snr_max
-        else:
-            band1, band2 = color.split("-")
-            flux1 = catalog[f"{band1}_{self.flux_type}Flux"].to_numpy(float)
-            flux2 = catalog[f"{band2}_{self.flux_type}Flux"].to_numpy(float)
-            err1 = catalog[f"{band1}_{self.flux_type}FluxErr"].to_numpy(float)
-            err2 = catalog[f"{band2}_{self.flux_type}FluxErr"].to_numpy(float)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                value = flux1 / flux2
-                err = np.abs(value) * np.sqrt((err1 / flux1) ** 2 + (err2 / flux2) ** 2)
-            floor = np.abs(value) * np.sqrt(2.0) / self.snr_max
-
-        err = np.clip(err, floor, None)
+        observable = build_observable(catalog, color, mode, snr_max=self.snr_max)
+        value = observable["value"].to_numpy(float)
+        err = observable["error"].to_numpy(float)
         good = np.isfinite(value) & np.isfinite(err) & (err > 0)
         if mode == "fcolors":
             good &= value > 0
@@ -852,7 +847,7 @@ class TreeCorrStacker:
         *,
         w: np.ndarray | None = None,
     ) -> Any:
-        catalog = self._foreground if mask is None else self._foreground.loc[mask]
+        catalog = self.foreground if mask is None else self.foreground.loc[mask]
         distance = self._foreground_da if mask is None else self._foreground_da[mask]
         return self._catalog(catalog, distance, w=w)
 
@@ -863,7 +858,7 @@ class TreeCorrStacker:
         k: np.ndarray | None = None,
         w: np.ndarray | None = None,
     ) -> Any:
-        catalog = self._background if mask is None else self._background.loc[mask]
+        catalog = self.background if mask is None else self.background.loc[mask]
         return self._catalog(catalog, np.ones(len(catalog)), k=k, w=w)
 
     def _catalog(
@@ -915,8 +910,8 @@ class TreeCorrStacker:
         w: np.ndarray | None = None,
     ) -> dict[str, Any]:
         kwargs = {
-            "ra": catalog["coord_ra"].to_numpy(float),
-            "dec": catalog["coord_dec"].to_numpy(float),
+            "ra": catalog["ra"].to_numpy(float),
+            "dec": catalog["dec"].to_numpy(float),
             "ra_units": "degrees",
             "dec_units": "degrees",
             "r": radial_distance,
@@ -939,13 +934,10 @@ class TreeCorrStacker:
         ]
 
     def _reference_bin(self) -> _RadialBin:
-        if self.r_aper_min <= 0 or self.r_aper_max <= self.r_aper_min:
-            raise ValueError("Reference annulus must have r_aper_max > r_aper_min > 0")
-        return _RadialBin(
-            self.r_aper_min,
-            self.r_aper_max,
-            float(np.sqrt(self.r_aper_min * self.r_aper_max)),
-        )
+        lo, hi = self.reference_annulus
+        if lo <= 0 or hi <= lo:
+            raise ValueError("reference_annulus must have max > min > 0")
+        return _RadialBin(lo, hi, float(np.sqrt(lo * hi)))
 
     def _nk(self, radial_bin: _RadialBin) -> Any:
         return treecorr.NKCorrelation(**self._corr_kwargs(radial_bin))
@@ -969,10 +961,8 @@ class TreeCorrStacker:
         return [self._stack_file(mode) for mode in self.modes]
 
     def _save_config(self) -> None:
-        config = asdict(self)
-        config["selector"] = asdict(self.selector)
-        with open(self.file_config, "w") as file:
-            yaml.safe_dump(self._to_builtin(config), file, sort_keys=False)
+        with open(self.out_dir / "config_resolved.yaml", "w") as file:
+            yaml.safe_dump(self._to_builtin(dict(self.config)), file, sort_keys=False)
 
     def _to_builtin(self, value: Any) -> Any:
         if isinstance(value, np.ndarray):
@@ -1014,4 +1004,19 @@ class TreeCorrStacker:
         return np.array([radial_bin.center for radial_bin in bins])
 
 
-TreeCorrDefault = TreeCorrStacker
+def run_treecorr_stack(
+    sample_dir: str | Path,
+    output_dir: str | Path,
+    stack_config: Mapping[str, Any],
+    *,
+    footprint_path: str | Path | None = None,
+    force: bool = False,
+) -> None:
+    """Run TreeCorr stacking from prepared sample outputs."""
+    stacker = TreeCorrStacker.from_sample_dir(
+        sample_dir,
+        output_dir,
+        stack_config,
+        footprint_path=footprint_path,
+    )
+    stacker.run(force=force)
