@@ -22,7 +22,10 @@ from dusty_colors.plotting import (
     default_style_path,
     load_stack_results,
     plot_all_color_signals,
+    plot_color_radial_distributions,
     plot_first_color_jackknife,
+    plot_photoz_radial_distributions,
+    save_stack_diagnostic_figures,
 )
 
 
@@ -57,7 +60,20 @@ def _write_graph(root: Path) -> Path:
 
 def _stack_arrays(colors: tuple[str, ...] = ("g-i", "g-r", "r-i")) -> dict:
     radius = np.geomspace(5.0, 100.0, 4)
-    arrays = {}
+    radial_edges = np.geomspace(5.0, 160.0, 5)
+    arrays = {
+        "diagnostic_radial_bin_edges": radial_edges,
+        "diagnostic_radial_bin_centers": radius,
+        "diagnostic_photoz_bin_edges": np.array([0.6, 0.9, 1.2, 1.5]),
+        "diagnostic_photoz_counts": np.array(
+            [
+                [10.0, 3.0, 1.0],
+                [8.0, 4.0, 2.0],
+                [6.0, 5.0, 3.0],
+                [4.0, 6.0, 4.0],
+            ]
+        ),
+    }
     for index, color in enumerate(colors):
         signal = np.array([0.08, 0.03, 0.012, 0.006]) * (index + 1)
         err = signal * 0.2
@@ -77,6 +93,15 @@ def _stack_arrays(colors: tuple[str, ...] = ("g-i", "g-r", "r-i")) -> dict:
                 f"{color}_jackknife_avg": samples.mean(axis=0),
                 f"{color}_jackknife_err": err,
                 f"{color}_jackknife_samples": samples,
+                f"{color}_diagnostic_color_bin_edges": np.array([-0.5, 0.0, 0.5, 1.0]),
+                f"{color}_diagnostic_color_counts": np.array(
+                    [
+                        [2.0, 6.0, 2.0],
+                        [1.0, 7.0, 3.0],
+                        [1.0, 5.0, 4.0],
+                        [0.0, 4.0, 6.0],
+                    ]
+                ),
             }
         )
     return arrays
@@ -132,6 +157,38 @@ class PlottingTest(unittest.TestCase):
         self.assertEqual(ax.get_yscale(), "log")
         self.assertEqual(fig.get_size_inches().tolist(), [3.0, 3.0])
         self.assertEqual(len(ax.containers), 3)
+
+    def test_plot_radial_distribution_diagnostics(self) -> None:
+        results = StackResults(
+            stack_dir=Path("unused"),
+            mode="fcolors",
+            colors=("g-i", "g-r"),
+            arrays=_stack_arrays(("g-i", "g-r")),
+        )
+
+        fig = plot_photoz_radial_distributions(results)
+        ax = fig.axes[0]
+        self.assertEqual(ax.get_xlabel(), "Photometric redshift")
+        self.assertGreater(len(ax.patches), 0)
+
+        fig = plot_color_radial_distributions(results, "g-r")
+        ax = fig.axes[0]
+        self.assertEqual(ax.get_xlabel(), r"$g-r$ [mag]")
+        self.assertGreater(len(ax.patches), 0)
+
+    def test_save_stack_diagnostic_figures_writes_available_diagnostics(self) -> None:
+        results = StackResults(
+            stack_dir=Path("dp1_default"),
+            mode="fcolors",
+            colors=("g-i", "g-r"),
+            arrays=_stack_arrays(("g-i", "g-r")),
+        )
+
+        with TemporaryDirectory() as tmp:
+            paths = save_stack_diagnostic_figures(results, tmp)
+
+            self.assertEqual(len(paths), 3)
+            self.assertTrue(all(path.exists() for path in paths))
 
 
 if __name__ == "__main__":

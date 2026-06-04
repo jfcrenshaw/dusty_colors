@@ -165,6 +165,7 @@ def run_pipeline(
             if kind == "stack":
                 write_resolved_config(spec.output_dir, resolved)
                 write_stack_figures(spec, resolved)
+                write_post_run_analyses(spec, resolved)
             results.append(_stage_result(spec, "skip", check.reason))
             continue
 
@@ -285,6 +286,7 @@ def run_stage(
     if spec.kind == "stack":
         write_resolved_config(spec.output_dir, resolved)
         write_stack_figures(spec, resolved)
+        write_post_run_analyses(spec, resolved)
     write_manifest(spec.output_dir, expected_manifest(spec, resolved))
 
 
@@ -417,13 +419,21 @@ def write_stack_figures(spec: StageSpec, resolved: ResolvedConfig) -> tuple[Path
     if spec.kind != "stack":
         return ()
 
-    from .plotting import save_stack_figures
+    from .plotting import save_stack_diagnostic_figures, save_stack_figures
 
     paths: list[Path] = []
     for mode in stack_modes(resolved.analysis):
         try:
             paths.extend(
                 save_stack_figures(
+                    spec.output_dir,
+                    spec.output_dir,
+                    mode=mode,
+                    root=resolved.root,
+                )
+            )
+            paths.extend(
+                save_stack_diagnostic_figures(
                     spec.output_dir,
                     spec.output_dir,
                     mode=mode,
@@ -437,6 +447,35 @@ def write_stack_figures(spec: StageSpec, resolved: ResolvedConfig) -> tuple[Path
                 stacklevel=2,
             )
     return tuple(paths)
+
+
+def write_post_run_analyses(
+    spec: StageSpec,
+    resolved: ResolvedConfig,
+) -> tuple[Path, ...]:
+    """Write non-plot analysis products next to stack outputs when possible."""
+
+    if spec.kind != "stack":
+        return ()
+
+    from .postrun import run_post_run_analyses
+
+    input_dirs = input_dirs_for(spec.kind, resolved)
+    try:
+        return run_post_run_analyses(
+            resolved,
+            stack_dir=spec.output_dir,
+            sample_dir=input_dirs["sample"],
+            catalog_dir=input_dirs["catalog"],
+            modes=stack_modes(resolved.analysis),
+        )
+    except (OSError, KeyError, ValueError, ModuleNotFoundError) as exc:
+        warnings.warn(
+            f"Could not write post-run analyses for {spec.config.id}: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return ()
 
 
 def force_flag_for(kind: PipelineStageKind) -> str:

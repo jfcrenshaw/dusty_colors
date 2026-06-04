@@ -12,3 +12,4 @@ dependencies:
   - jupyterlab
   - treecorr
   - scikit-learn
+  - dust_extinction

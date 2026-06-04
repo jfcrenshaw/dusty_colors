@@ -119,6 +119,9 @@ class TreeCorrStacker:
     random_nside: int = 1024
     flipped_correction: bool = True
     prefer_observable_columns: bool = False
+    diagnostic_plots: bool = True
+    diagnostic_photoz_bins: int | list[float] | np.ndarray = 40
+    diagnostic_color_bins: int | list[float] | np.ndarray = 40
 
     def __post_init__(self) -> None:
         self.out_dir = Path(self.out_dir)
@@ -146,6 +149,7 @@ class TreeCorrStacker:
         self._random_background: pd.DataFrame | None = None
         self._random_foreground_da: np.ndarray | None = None
         self._treecorr_patch_col = "_treecorr_patch"
+        self._diagnostic_cache: dict[ColorMode, dict[str, np.ndarray]] = {}
 
     @classmethod
     def from_sample_dir(
@@ -490,6 +494,7 @@ class TreeCorrStacker:
             )
         print(".")
 
+        results.update(self._diagnostic_arrays(mode, bins))
         np.savez_compressed(self._stack_file(mode), **results)
 
     def _observable(
@@ -948,6 +953,176 @@ class TreeCorrStacker:
             err=err,
             covariance=covariance,
             samples=samples,
+        )
+
+    def _diagnostic_arrays(
+        self,
+        mode: ColorMode,
+        bins: list[_RadialBin],
+    ) -> dict[str, np.ndarray]:
+        if not self.diagnostic_plots:
+            return {}
+        if mode not in self._diagnostic_cache:
+            self._diagnostic_cache[mode] = self._compute_diagnostic_arrays(mode, bins)
+        return self._diagnostic_cache[mode]
+
+    def _compute_diagnostic_arrays(
+        self,
+        mode: ColorMode,
+        bins: list[_RadialBin],
+    ) -> dict[str, np.ndarray]:
+        if len(self.foreground) == 0 or len(self.background) == 0:
+            return {}
+
+        from scipy.spatial import cKDTree
+
+        radial_edges = np.asarray(self.r_bin_edges, dtype=float)
+        fg_vectors = self._unit_vectors(self.foreground)
+        bg_vectors = self._unit_vectors(self.background)
+        background_tree = cKDTree(bg_vectors)
+
+        background_values: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+        if "z_phot" in self.background:
+            z_phot = self.background["z_phot"].to_numpy(float)
+            background_values["photoz"] = (z_phot, np.isfinite(z_phot))
+
+        for color in self.colors:
+            value, _, good = self._observable(self.background, color, mode)
+            color_value = self._raw_to_color(value, mode)
+            background_values[f"color:{color}"] = (
+                color_value,
+                np.isfinite(color_value) & good,
+            )
+
+        hist_edges: dict[str, np.ndarray] = {}
+        if "photoz" in background_values:
+            hist_edges["photoz"] = self._diagnostic_bin_edges(
+                background_values["photoz"][0],
+                background_values["photoz"][1],
+                self.diagnostic_photoz_bins,
+                "diagnostic_photoz_bins",
+            )
+        for color in self.colors:
+            key = f"color:{color}"
+            hist_edges[key] = self._diagnostic_bin_edges(
+                background_values[key][0],
+                background_values[key][1],
+                self.diagnostic_color_bins,
+                "diagnostic_color_bins",
+            )
+
+        hist_counts = {
+            key: np.zeros((len(bins), len(edges) - 1), dtype=float)
+            for key, edges in hist_edges.items()
+        }
+
+        max_r = radial_edges[-1]
+        for fg_vector, da in zip(fg_vectors, self._foreground_da):
+            if not np.isfinite(da) or da <= 0:
+                continue
+            max_theta = max_r / da
+            max_chord = 2.0 * np.sin(0.5 * max_theta)
+            neighbors = background_tree.query_ball_point(fg_vector, max_chord)
+            if not neighbors:
+                continue
+
+            bg_index = np.asarray(neighbors, dtype=int)
+            chords = np.linalg.norm(bg_vectors[bg_index] - fg_vector, axis=1)
+            theta = 2.0 * np.arcsin(np.clip(0.5 * chords, 0.0, 1.0))
+            radius = theta * da
+            radial_bin = np.searchsorted(radial_edges, radius, side="right") - 1
+            in_range = (radial_bin >= 0) & (radial_bin < len(bins))
+            if not np.any(in_range):
+                continue
+
+            bg_index = bg_index[in_range]
+            radial_bin = radial_bin[in_range]
+            for key, edges in hist_edges.items():
+                values, good = background_values[key]
+                good_pair = good[bg_index]
+                if not np.any(good_pair):
+                    continue
+                self._add_pair_histograms(
+                    hist_counts[key],
+                    radial_bin[good_pair],
+                    values[bg_index][good_pair],
+                    edges,
+                )
+
+        result = {
+            "diagnostic_radial_bin_edges": radial_edges,
+            "diagnostic_radial_bin_centers": self._bin_centers(bins),
+        }
+        if "photoz" in hist_counts:
+            result.update(
+                {
+                    "diagnostic_photoz_bin_edges": hist_edges["photoz"],
+                    "diagnostic_photoz_counts": hist_counts["photoz"],
+                }
+            )
+        for color in self.colors:
+            key = f"color:{color}"
+            result.update(
+                {
+                    f"{color}_diagnostic_color_bin_edges": hist_edges[key],
+                    f"{color}_diagnostic_color_counts": hist_counts[key],
+                }
+            )
+        return result
+
+    def _diagnostic_bin_edges(
+        self,
+        values: np.ndarray,
+        good: np.ndarray,
+        bins: int | list[float] | np.ndarray,
+        label: str,
+    ) -> np.ndarray:
+        if isinstance(bins, int):
+            if bins < 1:
+                raise ValueError(f"{label} must be positive")
+            finite = values[good & np.isfinite(values)]
+            if len(finite) == 0:
+                return np.linspace(0.0, 1.0, bins + 1)
+            lo = float(np.nanmin(finite))
+            hi = float(np.nanmax(finite))
+            if not np.isfinite(lo) or not np.isfinite(hi):
+                return np.linspace(0.0, 1.0, bins + 1)
+            if lo == hi:
+                pad = 0.5 if lo == 0 else 0.05 * abs(lo)
+                lo -= pad
+                hi += pad
+            return np.linspace(lo, hi, bins + 1)
+
+        edges = np.asarray(bins, dtype=float)
+        if edges.ndim != 1 or len(edges) < 2:
+            raise ValueError(f"{label} must contain at least two edges")
+        if not np.all(np.isfinite(edges)) or np.any(np.diff(edges) <= 0):
+            raise ValueError(f"{label} edges must be finite and increasing")
+        return edges
+
+    def _add_pair_histograms(
+        self,
+        counts: np.ndarray,
+        radial_bin: np.ndarray,
+        values: np.ndarray,
+        edges: np.ndarray,
+    ) -> None:
+        value_bin = np.searchsorted(edges, values, side="right") - 1
+        value_bin[values == edges[-1]] = len(edges) - 2
+        good = (value_bin >= 0) & (value_bin < counts.shape[1])
+        if np.any(good):
+            np.add.at(counts, (radial_bin[good], value_bin[good]), 1.0)
+
+    def _unit_vectors(self, catalog: pd.DataFrame) -> np.ndarray:
+        ra = np.deg2rad(catalog["ra"].to_numpy(float))
+        dec = np.deg2rad(catalog["dec"].to_numpy(float))
+        cos_dec = np.cos(dec)
+        return np.column_stack(
+            (
+                cos_dec * np.cos(ra),
+                cos_dec * np.sin(ra),
+                np.sin(dec),
+            )
         )
 
     def _foreground_position_catalog(self) -> Any:

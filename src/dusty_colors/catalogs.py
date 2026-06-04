@@ -30,6 +30,7 @@ REQUIRED_COLUMNS = {
     "mask_ok",
     "quality_ok",
 }
+MAGSYS_ZEROPOINT = 31.4
 
 
 def prepare_catalog(config: Mapping[str, Any], output_dir: str | Path) -> None:
@@ -152,6 +153,19 @@ class CatalogAdapter(ABC):
             if col in source:
                 target[target_col] = source[col]
                 return
+
+    @staticmethod
+    def ab_magnitude_to_nanjy(magnitude: np.ndarray) -> np.ndarray:
+        with np.errstate(over="ignore", invalid="ignore"):
+            return 10 ** ((MAGSYS_ZEROPOINT - magnitude) / 2.5)
+
+    @staticmethod
+    def magerr_to_nanjy_error(
+        flux: np.ndarray,
+        magerr: np.ndarray,
+    ) -> np.ndarray:
+        with np.errstate(invalid="ignore"):
+            return np.abs(flux) * np.log(10.0) / 2.5 * magerr
 
     def with_photoz_columns(self, source: pd.DataFrame) -> pd.DataFrame:
         photoz = self.config.get("photoz", {})
@@ -343,56 +357,114 @@ class DP1CatalogAdapter(CatalogAdapter):
 
 
 class ClaudsSExtractorCatalogAdapter(CatalogAdapter):
-    """Adapt CLAUDS/HSC SourceExtractor catalogs into the canonical schema."""
+    """Adapt Picouet CLAUDS-HSC SourceExtractor catalogs."""
+
+    required_columns = (
+        "ID",
+        "RA",
+        "DEC",
+        "field",
+        "ZPHOT",
+        "Z_BEST68_LOW",
+        "Z_BEST68_HIGH",
+        "OBJ_TYPE",
+        "CLEAN",
+        "EB_V",
+        "Z_SPEC",
+        "OFFSET_MAG_2s",
+    )
 
     def adapt(self, source: pd.DataFrame) -> pd.DataFrame:
-        bands = list(self.config.get("bands", ["g", "r", "i", "z"]))
+        self.require_columns(source, self.required_columns)
         mag_kind = str(self.config.get("mag_kind", "APER_2s"))
+        if mag_kind != "APER_2s":
+            raise ValueError("CLAUDS SourceExtractor adapter only supports APER_2s")
+        bands = _catalog_bands(self.config)
+        if not bands:
+            raise ValueError("CLAUDS SourceExtractor config must define bands")
 
         out = pd.DataFrame()
-        out["object_id"] = self.mapped_or_first(source, "object_id", ["ID"])
-        out["ra"] = self.mapped_or_first(source, "ra", ["RA"])
-        out["dec"] = self.mapped_or_first(source, "dec", ["DEC"])
-        out["field"] = self.config.get("field", "CLAUDS")
-        out["z_phot"] = self.mapped_or_first(source, "z_phot", ["ZPHOT"])
+        out["object_id"] = source["ID"]
+        out["ra"] = source["RA"]
+        out["dec"] = source["DEC"]
+        out["field"] = source["field"]
+        out["z_phot"] = source["ZPHOT"]
         out["z_phot_err"] = 0.5 * (
-            source[self.mapped_name("zpdf_u68", "ZPDF_U68")]
-            - source[self.mapped_name("zpdf_l68", "ZPDF_L68")]
+            source["Z_BEST68_HIGH"].to_numpy(float)
+            - source["Z_BEST68_LOW"].to_numpy(float)
         )
-        out["is_galaxy"] = self.mapped_or_first(source, "obj_type", ["OBJ_TYPE"]) == 0
-        out["mask_ok"] = self.mapped_or_first(source, "mask", ["MASK"]) == 0
+        out["is_galaxy"] = source["OBJ_TYPE"] == 0
+        out["mask_ok"] = source["CLEAN"].astype(bool)
         out["quality_ok"] = True
-        if "Z_SPEC" in source:
-            out["spec_z"] = source["Z_SPEC"]
-        if "MASS_MED" in source:
-            out["stellar_mass_log"] = source["MASS_MED"]
+        out["spec_z"] = source["Z_SPEC"]
+        out["ebv"] = source["EB_V"]
+        out["stellar_mass_log"] = self.stellar_mass_log(source)
 
+        offset = source["OFFSET_MAG_2s"].to_numpy(float)
         for band in bands:
-            prefix = str(self.config.get("band_prefix", "HSC"))
-            source_band = str(self.config.get("band_map", {}).get(band, band))
-            stem = f"{prefix}_{source_band}_MAG_{mag_kind}"
-            err_stem = f"{prefix}_{source_band}_MAGERR_{mag_kind}"
-            self.copy_first_existing(
-                source,
-                out,
-                [self.column_map.get(f"mag_{band}", stem), stem, source_band, band],
-                f"mag_{band}",
-            )
-            self.copy_first_existing(
-                source,
-                out,
-                [self.column_map.get(f"magerr_{band}", err_stem), err_stem],
-                f"magerr_{band}",
-            )
+            values, errors = self.picouet_photometry(source, band)
+            magnitudes = values.copy()
+            finite = np.isfinite(magnitudes)
+            magnitudes[finite] = magnitudes[finite] + offset[finite]
+            flux = self.ab_magnitude_to_nanjy(magnitudes)
 
-        offset = f"OFFSET_MAG_{mag_kind.split('_')[-1]}"
-        if bool(self.config.get("apply_aperture_offset", False)) and offset in source:
-            for band in bands:
-                col = f"mag_{band}"
-                if col in out:
-                    out[col] = out[col] + source[offset]
+            out[f"mag_{band}"] = magnitudes
+            out[f"magerr_{band}"] = errors
+            out[f"flux_{band}"] = flux
+            out[f"fluxerr_{band}"] = self.magerr_to_nanjy_error(flux, errors)
 
         return out
+
+    @staticmethod
+    def require_columns(source: pd.DataFrame, columns: tuple[str, ...]) -> None:
+        missing = sorted(set(columns) - set(source.columns))
+        if missing:
+            raise ValueError(f"CLAUDS SourceExtractor columns are missing: {missing}")
+
+    @staticmethod
+    def stellar_mass_log(source: pd.DataFrame) -> np.ndarray:
+        if "MASS_MED" not in source and "MASS_MED_6B" not in source:
+            raise ValueError(
+                "CLAUDS SourceExtractor columns are missing: "
+                "['MASS_MED' or 'MASS_MED_6B']"
+            )
+        values = np.full(len(source), np.nan, dtype=float)
+        if "MASS_MED" in source:
+            values = source["MASS_MED"].to_numpy(float)
+        if "MASS_MED_6B" in source:
+            fallback = source["MASS_MED_6B"].to_numpy(float)
+            use = ~np.isfinite(values) & np.isfinite(fallback)
+            values = values.copy()
+            values[use] = fallback[use]
+        return values
+
+    def picouet_photometry(
+        self,
+        source: pd.DataFrame,
+        band: str,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        required = []
+        for source_band in self.source_bands_for(band):
+            required.extend(
+                [f"MAG_APER_2s_{source_band}", f"MAGERR_APER_2s_{source_band}"]
+            )
+        self.require_columns(source, tuple(required))
+
+        values = np.full(len(source), np.nan, dtype=float)
+        errors = np.full(len(source), np.nan, dtype=float)
+        for source_band in self.source_bands_for(band):
+            mag = source[f"MAG_APER_2s_{source_band}"].to_numpy(float)
+            err = source[f"MAGERR_APER_2s_{source_band}"].to_numpy(float)
+            use = ~np.isfinite(values) & np.isfinite(mag) & np.isfinite(err)
+            values[use] = mag[use]
+            errors[use] = err[use]
+        return values, errors
+
+    @staticmethod
+    def source_bands_for(band: str) -> list[str]:
+        if band == "u":
+            return ["u", "uS"]
+        return [band]
 
 
 ADAPTER_CLASSES: dict[str, type[CatalogAdapter]] = {

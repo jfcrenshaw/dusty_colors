@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from astropy.coordinates import angular_separation
 import healpy as hp
 import numpy as np
 import pandas as pd
@@ -34,14 +35,24 @@ def assign_fields(
     *,
     radius_deg: float = 2.0,
 ) -> pd.DataFrame:
-    """Assign field labels from configured centers using a simple sky radius."""
+    """Assign field labels from configured centers using angular separation."""
     catalog = catalog.copy()
     assigned = np.full(len(catalog), "", dtype=object)
     ra = catalog["ra"].to_numpy(float)
     dec = catalog["dec"].to_numpy(float)
+    best_sep = np.full(len(catalog), np.inf, dtype=float)
     for name, center in fields.items():
-        dist2 = (ra - float(center["ra"])) ** 2 + (dec - float(center["dec"])) ** 2
-        assigned[dist2 < radius_deg**2] = name
+        sep = np.rad2deg(
+            angular_separation(
+                np.deg2rad(ra),
+                np.deg2rad(dec),
+                np.deg2rad(float(center["ra"])),
+                np.deg2rad(float(center["dec"])),
+            )
+        )
+        use = (sep < radius_deg) & (sep < best_sep)
+        assigned[use] = name
+        best_sep[use] = sep[use]
     if np.any(assigned == ""):
         assigned[assigned == ""] = "unknown"
     catalog["field"] = assigned

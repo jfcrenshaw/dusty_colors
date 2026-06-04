@@ -1,0 +1,66 @@
+id: clauds_sextractor_optical
+adapter: clauds_sextractor
+primary_source: objects
+sources:
+  objects:
+    files:
+      - path: data/clauds/COSMOS_v10_v210913_withGALEX.fits
+        field: E-COSMOS
+      - path: data/clauds/XMM_LSS_v10_v210913_withGALEX.fits
+        field: XMM-LSS
+      - path: data/clauds/ELAIS-N1_6bands-SExtractor-Lephare.fits
+        field: ELAIS-N1
+      - path: data/clauds/DEEP2-3_6bands-SExtractor-Lephare.fits
+        field: DEEP2-3
+    columns:
+      - ID
+      - RA
+      - DEC
+      - field
+      - ZPHOT
+      - Z_BEST68_LOW
+      - Z_BEST68_HIGH
+      - OBJ_TYPE
+      - CLEAN
+      - EB_V
+      - Z_SPEC
+      - OFFSET_MAG_2s
+      - MAG_APER_2s_u
+      - MAGERR_APER_2s_u
+      - MAG_APER_2s_uS
+      - MAGERR_APER_2s_uS
+      - MAG_APER_2s_g
+      - MAGERR_APER_2s_g
+      - MAG_APER_2s_r
+      - MAGERR_APER_2s_r
+      - MAG_APER_2s_i
+      - MAGERR_APER_2s_i
+      - MAG_APER_2s_z
+      - MAGERR_APER_2s_z
+      - MAG_APER_2s_y
+      - MAGERR_APER_2s_y
+    optional_columns:
+      - MASS_MED
+      - MASS_MED_6B
+bands: [u, g, r, i, z, y]
+photometry: flux
+mag_kind: APER_2s
+extinction:
+  enabled: false
+enrichments:
+  kcorrect:
+    enabled: false
+  halo_mass:
+    enabled: true
+    stellar_mass_col: stellar_mass_log
+    stellar_mass_is_log: true
+    halo_mass_col: halo_mass_log
+    r200_col: r200_mpc
+footprint:
+  nside: 1024
+  field_radius_deg: 5.0
+  fields:
+    E-COSMOS: {ra: 150.1208, dec: 2.2058}
+    DEEP2-3: {ra: 352.5000, dec: 0.0000}
+    ELAIS-N1: {ra: 242.5000, dec: 54.0000}
+    XMM-LSS: {ra: 36.2500, dec: -4.5000}

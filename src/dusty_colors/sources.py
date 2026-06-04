@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+from astropy.io import fits
 from astropy.table import Table
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -52,10 +53,21 @@ def load_source_table(
     """Load one source table and apply local filters/renames/column pruning."""
     if not isinstance(config, Mapping):
         raise ValueError("Source config must contain a YAML mapping")
-    if "path" not in config:
-        raise ValueError("Source config missing required 'path'")
 
-    table = read_table(config["path"])
+    file_configs = _source_file_configs(config)
+    project_columns = "columns" in config or "optional_columns" in config
+    required_columns = list(config.get("columns", []))
+    optional_columns = list(config.get("optional_columns", []))
+    for col in ensure_columns or []:
+        if col not in required_columns:
+            required_columns.append(col)
+
+    table = _read_source_files(
+        file_configs,
+        required_columns=required_columns if project_columns else [],
+        optional_columns=optional_columns if project_columns else [],
+    )
+
     rename = dict(config.get("rename", {}))
     if rename:
         table = table.rename(columns=rename)
@@ -77,15 +89,20 @@ def load_source_table(
         subset = None if drop_duplicates is True else list(drop_duplicates)
         table = table.drop_duplicates(subset=subset).reset_index(drop=True)
 
-    columns = list(config.get("columns", []))
-    if columns:
-        for col in ensure_columns or []:
-            if col not in columns:
-                columns.append(col)
-        missing = sorted(set(columns) - set(table.columns))
+    if project_columns:
+        missing = sorted(set(required_columns) - set(table.columns))
         if missing:
             raise ValueError(f"Source columns are missing: {missing}")
-        table = table[columns].copy()
+        output_columns = [
+            col
+            for col in [*required_columns, *optional_columns]
+            if col in table.columns
+        ]
+        table = table[_unique(output_columns)].copy()
+    elif ensure_columns:
+        missing = sorted(set(ensure_columns) - set(table.columns))
+        if missing:
+            raise ValueError(f"Source columns are missing: {missing}")
 
     return table
 
@@ -107,7 +124,12 @@ def join_source(
     return joined
 
 
-def read_table(path: str | Path) -> pd.DataFrame:
+def read_table(
+    path: str | Path,
+    *,
+    columns: list[str] | None = None,
+    optional_columns: list[str] | None = None,
+) -> pd.DataFrame:
     """Read a supported table format into pandas."""
     path = Path(path)
     if not path.is_absolute() and not path.exists():
@@ -115,15 +137,142 @@ def read_table(path: str | Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(path)
     suffix = path.suffix.lower()
+    required = list(columns or [])
+    optional = list(optional_columns or [])
+    projected = _unique([*required, *optional])
     if suffix == ".parquet":
-        return pd.read_parquet(path)
+        return _read_parquet(path, required, optional)
     if suffix in {".fits", ".fit", ".fz"}:
-        return Table.read(path).to_pandas()
+        return _read_fits(path, required, optional)
     if suffix == ".csv":
-        return pd.read_csv(path)
+        return pd.read_csv(path, usecols=projected or None)
     if suffix in {".ecsv", ".ascii"}:
-        return Table.read(path).to_pandas()
+        table = Table.read(path)
+        if projected:
+            missing = sorted(set(required) - set(table.colnames))
+            if missing:
+                raise ValueError(f"Source columns are missing: {missing}")
+            projected = [col for col in projected if col in table.colnames]
+            table = table[projected]
+        return table.to_pandas()
     raise ValueError(f"Unsupported source table format: {path}")
+
+
+def _source_file_configs(config: Mapping[str, Any]) -> list[dict[str, Any]]:
+    if "files" in config:
+        files = config["files"]
+    elif "path" in config:
+        files = config["path"]
+    else:
+        raise ValueError("Source config missing required 'path' or 'files'")
+
+    if not isinstance(files, (list, tuple)):
+        files = [files]
+
+    out = []
+    for item in files:
+        if isinstance(item, Mapping):
+            if "path" not in item:
+                raise ValueError("Source file mapping missing required 'path'")
+            out.append(dict(item))
+        else:
+            out.append({"path": item})
+    return out
+
+
+def _read_source_files(
+    file_configs: list[dict[str, Any]],
+    *,
+    required_columns: list[str],
+    optional_columns: list[str],
+) -> pd.DataFrame:
+    injected_columns = {
+        str(key)
+        for file_config in file_configs
+        for key in file_config
+        if key != "path"
+    }
+    required_to_read = [
+        col for col in required_columns if col not in injected_columns
+    ]
+    optional_to_read = [
+        col for col in optional_columns if col not in injected_columns
+    ]
+
+    tables = []
+    for file_config in file_configs:
+        table = read_table(
+            file_config["path"],
+            columns=required_to_read,
+            optional_columns=optional_to_read,
+        )
+        for key, value in file_config.items():
+            if key == "path":
+                continue
+            table[str(key)] = value
+        tables.append(table)
+
+    if len(tables) == 1:
+        return tables[0].reset_index(drop=True)
+    return pd.concat(tables, ignore_index=True, sort=False)
+
+
+def _read_parquet(
+    path: Path,
+    required_columns: list[str],
+    optional_columns: list[str],
+) -> pd.DataFrame:
+    columns = _unique([*required_columns, *optional_columns])
+    if not columns:
+        return pd.read_parquet(path)
+    try:
+        return pd.read_parquet(path, columns=columns)
+    except (KeyError, ValueError):
+        if optional_columns:
+            return pd.read_parquet(path, columns=required_columns)
+        raise
+
+
+def _read_fits(
+    path: Path,
+    required_columns: list[str],
+    optional_columns: list[str],
+) -> pd.DataFrame:
+    columns = _available_fits_columns(path, required_columns, optional_columns)
+    if not columns:
+        return Table.read(path).to_pandas()
+    with fits.open(path, memmap=True) as hdus:
+        data = hdus[1].data
+        table = Table({col: data[col] for col in columns}, copy=True)
+    return table.to_pandas()
+
+
+def _available_fits_columns(
+    path: Path,
+    required_columns: list[str],
+    optional_columns: list[str],
+) -> list[str]:
+    requested = _unique([*required_columns, *optional_columns])
+    if not requested:
+        return []
+    with fits.open(path, memmap=True) as hdus:
+        names = list(hdus[1].columns.names)
+    missing = sorted(set(required_columns) - set(names))
+    if missing:
+        raise ValueError(f"Source columns are missing in {path}: {missing}")
+    available = set(names)
+    return [col for col in requested if col in available]
+
+
+def _unique(values: list[str]) -> list[str]:
+    out = []
+    seen = set()
+    for value in values:
+        value = str(value)
+        if value not in seen:
+            out.append(value)
+            seen.add(value)
+    return out
 
 
 def _join_kwargs(config: Mapping[str, Any], source_name: str) -> dict[str, Any]:

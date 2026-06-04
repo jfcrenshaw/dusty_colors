@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import unittest
 
 import numpy as np
+import pandas as pd
 import yaml
 
 os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/dusty_colors_mpl")
@@ -49,6 +50,7 @@ def _write_graph(root: Path, *, foreground_z: list[float] | None = None) -> Path
             },
             "bands": ["g", "r", "i"],
             "photometry": "flux",
+            "footprint": {"nside": 1},
         },
     )
     _write_yaml(
@@ -85,8 +87,23 @@ def _handlers() -> StageHandlers:
         (context.output_dir / "footprint.parquet").write_bytes(b"footprint")
 
     def sample(context) -> None:
-        (context.output_dir / "foreground.parquet").write_bytes(b"foreground")
-        (context.output_dir / "background.parquet").write_bytes(b"background")
+        pd.DataFrame(
+            {
+                "ra": [10.0, 20.0],
+                "dec": [0.0, 1.0],
+                "z_phot": [0.3, 0.4],
+                "pixel": [0, 1],
+                "jackknife_region": [0, 1],
+            }
+        ).to_parquet(context.output_dir / "foreground.parquet", index=False)
+        pd.DataFrame(
+            {
+                "ra": [11.0, 21.0],
+                "dec": [0.0, 1.0],
+                "pixel": [0, 1],
+                "jackknife_region": [0, 1],
+            }
+        ).to_parquet(context.output_dir / "background.parquet", index=False)
 
     def stack(context) -> None:
         for path in context.expected_outputs:
@@ -223,6 +240,44 @@ class ConfigPipelineTest(unittest.TestCase):
             self.assertEqual(called["output_path"], output_dir)
             self.assertEqual(called["stack_config"], {"random_seed": 11})
             self.assertTrue(called["force"])
+
+    def test_clauds_analysis_graphs_resolve(self) -> None:
+        optical = load_resolved_config(
+            ROOT / "configs/analyses/clauds_sextractor_optical_default_rand100.yaml",
+            root=ROOT,
+        )
+        nir = load_resolved_config(
+            ROOT / "configs/analyses/clauds_sextractor_nir_default_rand100.yaml",
+            root=ROOT,
+        )
+
+        self.assertEqual(optical.catalog.id, "clauds_sextractor_optical")
+        self.assertEqual(optical.sample.id, "clauds_sextractor_optical_default")
+        self.assertEqual(
+            optical.analysis.id,
+            "clauds_sextractor_optical_default_rand100",
+        )
+        self.assertEqual(optical.catalog.data["bands"], ["u", "g", "r", "i", "z", "y"])
+        self.assertEqual(optical.catalog.data["photometry"], "flux")
+        self.assertIn("fluxerr_template", optical.sample.data["selection"]["snr_min"])
+        self.assertFalse(optical.catalog.data["enrichments"]["kcorrect"]["enabled"])
+        self.assertIn("u-g", optical.analysis.data["stack"]["colors"])
+        self.assertIn("z-y", optical.analysis.data["stack"]["colors"])
+        self.assertEqual(optical.analysis.data["stack"]["modes"], ["fcolors"])
+        self.assertEqual(optical.sample.data["jackknife"]["regions_per_field"], 3)
+
+        self.assertEqual(nir.catalog.id, "clauds_sextractor_nir")
+        self.assertEqual(nir.catalog.data["extra_bands"], ["Yv", "J", "H", "Ks"])
+        self.assertEqual(
+            [item["field"] for item in nir.catalog.data["sources"]["objects"]["files"]],
+            ["E-COSMOS", "XMM-LSS"],
+        )
+        self.assertIn("u-Yv", nir.analysis.data["stack"]["colors"])
+        self.assertIn("H-Ks", nir.analysis.data["stack"]["colors"])
+        np.testing.assert_allclose(
+            nir.analysis.data["stack"]["r_bin_edges"],
+            np.geomspace(5.0, 1000.0, 6),
+        )
 
 
 if __name__ == "__main__":

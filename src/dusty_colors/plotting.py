@@ -25,6 +25,7 @@ DEFAULT_COLOR_STYLES = {
     "r-i": "C2",
     "i-z": "C3",
 }
+DEFAULT_RADIAL_STYLES = ("C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7")
 
 
 @dataclass(frozen=True)
@@ -259,6 +260,84 @@ def plot_all_color_signals(
     return fig
 
 
+def plot_photoz_radial_distributions(
+    source: StackResults | str | Path,
+    *,
+    mode: str | None = None,
+    root: str | Path | None = None,
+    stack_dir: str | Path | None = None,
+    ax: "Axes | None" = None,
+    style: bool = True,
+    style_path: str | Path | None = None,
+    figsize: tuple[float, float] = DEFAULT_FIGSIZE,
+) -> "Figure":
+    """Plot pair-weighted background photo-z distributions by radial bin."""
+
+    results = _coerce_stack_results(
+        source,
+        mode=mode,
+        root=root,
+        stack_dir=stack_dir,
+    )
+    fig, ax = _figure_and_axis(ax, style=style, style_path=style_path, figsize=figsize)
+    counts = np.asarray(results.require("diagnostic_photoz_counts"), dtype=float)
+    edges = np.asarray(results.require("diagnostic_photoz_bin_edges"), dtype=float)
+    radial_edges = np.asarray(
+        results.require("diagnostic_radial_bin_edges"),
+        dtype=float,
+    )
+    _plot_radial_histograms(ax, counts, edges, radial_edges)
+    _format_distribution_axis(
+        ax,
+        xlabel="Photometric redshift",
+        ylabel="Pair density",
+    )
+    return fig
+
+
+def plot_color_radial_distributions(
+    source: StackResults | str | Path,
+    color: str | None = None,
+    *,
+    mode: str | None = None,
+    root: str | Path | None = None,
+    stack_dir: str | Path | None = None,
+    ax: "Axes | None" = None,
+    style: bool = True,
+    style_path: str | Path | None = None,
+    figsize: tuple[float, float] = DEFAULT_FIGSIZE,
+) -> "Figure":
+    """Plot pair-weighted background color distributions by radial bin."""
+
+    results = _coerce_stack_results(
+        source,
+        mode=mode,
+        root=root,
+        stack_dir=stack_dir,
+    )
+    selected_color = results.first_color if color is None else str(color)
+    fig, ax = _figure_and_axis(ax, style=style, style_path=style_path, figsize=figsize)
+    counts = np.asarray(
+        results.require(f"{selected_color}_diagnostic_color_counts"),
+        dtype=float,
+    )
+    edges = np.asarray(
+        results.require(f"{selected_color}_diagnostic_color_bin_edges"),
+        dtype=float,
+    )
+    radial_edges = np.asarray(
+        results.require("diagnostic_radial_bin_edges"),
+        dtype=float,
+    )
+    _plot_radial_histograms(ax, counts, edges, radial_edges)
+    _format_distribution_axis(
+        ax,
+        xlabel=rf"${selected_color}$ [mag]",
+        ylabel="Pair density",
+    )
+    return fig
+
+
 def save_stack_figures(
     source: StackResults | str | Path,
     output_dir: str | Path,
@@ -294,6 +373,60 @@ def save_stack_figures(
     fig.savefig(signals_path, dpi=dpi, bbox_inches="tight")
     _close_figure(fig)
     return jackknife_path, signals_path
+
+
+def save_stack_diagnostic_figures(
+    source: StackResults | str | Path,
+    output_dir: str | Path,
+    *,
+    mode: str | None = None,
+    root: str | Path | None = None,
+    stack_dir: str | Path | None = None,
+    extension: str = "pdf",
+    dpi: int = 300,
+) -> tuple[Path, ...]:
+    """Create and save available radial-bin diagnostic figures."""
+
+    results = _coerce_stack_results(
+        source,
+        mode=mode,
+        root=root,
+        stack_dir=stack_dir,
+    )
+    if not _has_diagnostic_arrays(results):
+        return ()
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    extension = extension.lstrip(".")
+    stem = f"{results.stack_dir.name}_{results.mode}"
+    paths: list[Path] = []
+
+    if {
+        "diagnostic_photoz_counts",
+        "diagnostic_photoz_bin_edges",
+    }.issubset(results.arrays):
+        photoz_path = output_path / f"{stem}_photoz_distribution.{extension}"
+        fig = plot_photoz_radial_distributions(results)
+        fig.savefig(photoz_path, dpi=dpi, bbox_inches="tight")
+        _close_figure(fig)
+        paths.append(photoz_path)
+
+    for color in results.colors:
+        if not {
+            f"{color}_diagnostic_color_counts",
+            f"{color}_diagnostic_color_bin_edges",
+        }.issubset(results.arrays):
+            continue
+        color_path = output_path / (
+            f"{stem}_{_slug(color)}_color_distribution.{extension}"
+        )
+        fig = plot_color_radial_distributions(results, color)
+        fig.savefig(color_path, dpi=dpi, bbox_inches="tight")
+        _close_figure(fig)
+        paths.append(color_path)
+
+    return tuple(paths)
 
 
 def _coerce_stack_results(
@@ -338,6 +471,13 @@ def _format_stack_axis(ax: "Axes", *, ylabel: str) -> None:
     ax.set_yscale("log")
     ax.set_xlabel(r"$r_\perp$ [kpc]")
     ax.set_ylabel(ylabel)
+    _set_square_axis(ax)
+
+
+def _format_distribution_axis(ax: "Axes", *, xlabel: str, ylabel: str) -> None:
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.legend(frameon=False, handlelength=1.4, fontsize=7)
     _set_square_axis(ax)
 
 
@@ -393,6 +533,60 @@ def _profile_mask(
 
 def _positive_xy_mask(radius: np.ndarray, signal: np.ndarray) -> np.ndarray:
     return np.isfinite(radius) & np.isfinite(signal) & (radius > 0) & (signal > 0)
+
+
+def _plot_radial_histograms(
+    ax: "Axes",
+    counts: np.ndarray,
+    edges: np.ndarray,
+    radial_edges: np.ndarray,
+) -> None:
+    _require_histogram_shape(counts, edges, radial_edges)
+    plotted = 0
+    for index, row in enumerate(counts):
+        total = np.sum(row)
+        if total <= 0:
+            continue
+        widths = np.diff(edges)
+        density = np.divide(
+            row,
+            total * widths,
+            out=np.zeros_like(row),
+            where=widths > 0,
+        )
+        ax.stairs(
+            density,
+            edges,
+            color=_radial_style(index),
+            label=_radial_bin_label(radial_edges[index], radial_edges[index + 1]),
+            lw=1.0,
+        )
+        plotted += 1
+    if plotted == 0:
+        raise ValueError("No finite diagnostic pairs were available to plot")
+
+
+def _require_histogram_shape(
+    counts: np.ndarray,
+    edges: np.ndarray,
+    radial_edges: np.ndarray,
+) -> None:
+    if counts.ndim != 2:
+        raise ValueError("Diagnostic counts must be two-dimensional")
+    if edges.ndim != 1 or len(edges) != counts.shape[1] + 1:
+        raise ValueError("Diagnostic bin edges do not match diagnostic counts")
+    if radial_edges.ndim != 1 or len(radial_edges) != counts.shape[0] + 1:
+        raise ValueError("Diagnostic radial bin edges do not match diagnostic counts")
+
+
+def _has_diagnostic_arrays(results: StackResults) -> bool:
+    if "diagnostic_radial_bin_edges" not in results.arrays:
+        return False
+    if "diagnostic_photoz_counts" in results.arrays:
+        return True
+    return any(
+        f"{color}_diagnostic_color_counts" in results.arrays for color in results.colors
+    )
 
 
 def _read_stack_npz(path: Path) -> dict[str, np.ndarray]:
@@ -469,6 +663,14 @@ def _single_color_ylabel(color: str) -> str:
     return rf"$E({color})$ [mag]"
 
 
+def _radial_style(index: int) -> str:
+    return DEFAULT_RADIAL_STYLES[index % len(DEFAULT_RADIAL_STYLES)]
+
+
+def _radial_bin_label(lo: float, hi: float) -> str:
+    return f"{lo:g}-{hi:g} kpc"
+
+
 def _slug(value: str) -> str:
     return value.replace("-", "_").replace("/", "_")
 
@@ -478,7 +680,10 @@ __all__ = [
     "default_style_path",
     "load_stack_results",
     "plot_all_color_signals",
+    "plot_color_radial_distributions",
     "plot_first_color_jackknife",
+    "plot_photoz_radial_distributions",
+    "save_stack_diagnostic_figures",
     "save_stack_figures",
     "use_matplotlib_style",
 ]

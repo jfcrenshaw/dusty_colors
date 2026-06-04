@@ -130,15 +130,19 @@ Stack options include `colors`, `modes` (`fcolors` and/or `mcolors`),
 `r_bin_edges` as an explicit list or `geomspace`/`linspace`/`logspace`,
 `reference_annulus`, `snr_max`, `bin_slop`, `num_threads`, `jackknife`,
 `patch_col`, `cross_patch_weight`, `random_correction`, `random_multiplier`,
-`random_seed`, `random_nside`, and `flipped_correction`. Set
-`flipped_correction: false` to measure the forward stack minus the random
-forward stack, with the same reference-annulus subtraction, without subtracting
+`random_seed`, `random_nside`, `flipped_correction`, `diagnostic_plots`,
+`diagnostic_photoz_bins`, and `diagnostic_color_bins`. Set
+`flipped_correction: false` to measure the forward stack minus the random forward
+stack, with the same reference-annulus subtraction, without subtracting
 foreground-color flipped stacks.
 
 Each analysis run also refreshes standard stack figures in
 `results/stacks/<analysis-id>`: one square log-log jackknife-sample plot for the
 first configured color, and one square log-log full-signal plot for every color,
-for each configured stack mode.
+for each configured stack mode. With `diagnostic_plots` enabled, stack outputs
+also include pair-weighted background photo-z and magnitude-color histograms for
+each radial bin; the pipeline saves one photo-z diagnostic and one color
+diagnostic per configured color.
 
 Stack plotting helpers also live in `dusty_colors.plotting` for manual use. They
 load the analysis YAML color order and apply the project Matplotlib style:

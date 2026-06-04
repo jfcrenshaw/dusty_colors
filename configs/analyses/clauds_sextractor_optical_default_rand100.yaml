@@ -1,7 +1,22 @@
-id: dp1_default_rand100
-sample: configs/samples/dp1_default.yaml
+id: clauds_sextractor_optical_default_rand100
+sample: configs/samples/clauds_sextractor_optical_default.yaml
 stack:
-  colors: [g-z, g-r, r-i, i-z]
+  colors:
+    - u-g
+    - u-r
+    - u-i
+    - u-z
+    - u-y
+    - g-r
+    - g-i
+    - g-z
+    - g-y
+    - r-i
+    - r-z
+    - r-y
+    - i-z
+    - i-y
+    - z-y
   modes: [fcolors]
   r_bin_edges:
     geomspace: { start: 5.0, stop: 1000.0, num: 6 }

@@ -550,11 +550,20 @@ def _pixel_depth_values(
 ) -> np.ndarray:
     if fluxerr_col not in catalog:
         raise ValueError(f"Pixel depth cut requested missing column: {fluxerr_col}")
-
     fluxerr = catalog[fluxerr_col].to_numpy(float)
     with np.errstate(divide="ignore", invalid="ignore"):
         depth = MAGSYS_ZEROPOINT - 2.5 * np.log10(depth_sigma * fluxerr)
     finite = rows_mask & np.isfinite(depth) & (fluxerr > 0)
+    return _median_pixel_depth(catalog, pixel_col=pixel_col, depth=depth, finite=finite)
+
+
+def _median_pixel_depth(
+    catalog: pd.DataFrame,
+    *,
+    pixel_col: str,
+    depth: np.ndarray,
+    finite: np.ndarray,
+) -> np.ndarray:
     data = pd.DataFrame(
         {
             "pixel": catalog[pixel_col],

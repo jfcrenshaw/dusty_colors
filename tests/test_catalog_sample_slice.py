@@ -244,34 +244,101 @@ class CatalogSampleSliceTest(unittest.TestCase):
             self.assertEqual(len(footprint), 2)
             self.assertIn("pixel", footprint)
 
-    def test_clauds_adapter_maps_source_extractor_magnitudes(self) -> None:
+    def test_clauds_adapter_rejects_non_picouet_photometry(self) -> None:
         raw = pd.DataFrame(
             {
                 "ID": [1, 2],
                 "RA": [150.0, 150.2],
                 "DEC": [2.1, 2.2],
+                "field": ["E-COSMOS", "E-COSMOS"],
                 "ZPHOT": [0.4, 1.0],
-                "ZPDF_L68": [0.35, 0.9],
-                "ZPDF_U68": [0.45, 1.1],
+                "Z_BEST68_LOW": [0.35, 0.9],
+                "Z_BEST68_HIGH": [0.45, 1.1],
                 "OBJ_TYPE": [0, 2],
-                "MASK": [0, 1],
+                "CLEAN": [1, 0],
+                "EB_V": [0.01, 0.02],
+                "Z_SPEC": [0.41, -99.0],
+                "OFFSET_MAG_2s": [0.1, 0.2],
                 "MASS_MED": [10.1, 9.5],
                 "HSC_g_MAG_APER_2s": [24.0, 24.5],
                 "HSC_g_MAGERR_APER_2s": [0.03, 0.04],
-                "HSC_r_MAG_APER_2s": [23.5, 24.1],
-                "HSC_r_MAGERR_APER_2s": [0.02, 0.03],
             }
         )
 
-        catalog = ClaudsSExtractorCatalogAdapter(
-            {"bands": ["g", "r"], "photometry": "mag"}
-        ).adapt(raw)
+        with self.assertRaisesRegex(ValueError, "MAG_APER_2s_g"):
+            ClaudsSExtractorCatalogAdapter(
+                {"bands": ["g"], "photometry": "flux"}
+            ).adapt(raw)
 
-        validate_canonical_schema(catalog, bands=["g", "r"], photometry="mag")
-        np.testing.assert_allclose(catalog["z_phot_err"], [0.05, 0.1])
-        self.assertEqual(list(catalog["is_galaxy"]), [True, False])
-        self.assertEqual(list(catalog["mask_ok"]), [True, False])
-        np.testing.assert_allclose(catalog["stellar_mass_log"], [10.1, 9.5])
+    def test_clauds_adapter_maps_picouet_columns_and_u_fallback(self) -> None:
+        raw = pd.DataFrame(
+            {
+                "ID": [1, 2, 3],
+                "RA": [150.0, 150.2, 150.4],
+                "DEC": [2.1, 2.2, 2.3],
+                "field": ["E-COSMOS"] * 3,
+                "ZPHOT": [0.4, 1.0, 0.8],
+                "Z_BEST68_LOW": [0.35, 0.9, 0.75],
+                "Z_BEST68_HIGH": [0.45, 1.1, 0.85],
+                "OBJ_TYPE": [0, 0, 2],
+                "CLEAN": [1, 0, 1],
+                "EB_V": [0.01, 0.02, 0.03],
+                "Z_SPEC": [0.41, -99.0, 0.82],
+                "MASS_MED": [10.1, np.nan, 9.8],
+                "MASS_MED_6B": [10.0, 9.4, 9.7],
+                "OFFSET_MAG_2s": [0.1, 0.2, 0.3],
+                "MAG_APER_2s_u": [np.nan, 24.0, np.nan],
+                "MAGERR_APER_2s_u": [np.nan, 0.04, np.nan],
+                "MAG_APER_2s_uS": [23.5, 23.0, 22.0],
+                "MAGERR_APER_2s_uS": [0.03, 0.03, 0.03],
+                "MAG_APER_2s_g": [24.0, 24.5, 25.0],
+                "MAGERR_APER_2s_g": [0.03, 0.04, 0.05],
+                "MAG_APER_2s_r": [23.0, 23.5, 24.0],
+                "MAGERR_APER_2s_r": [0.02, 0.02, 0.02],
+            }
+        )
+        config = {
+            "bands": ["u", "g", "r"],
+            "photometry": "flux",
+            "mag_kind": "APER_2s",
+        }
+
+        catalog = ClaudsSExtractorCatalogAdapter(config).adapt(raw)
+
+        def flux_from_mag(mag: float) -> float:
+            return 10 ** ((31.4 - mag) / 2.5)
+
+        def fluxerr_from_magerr(mag: float, magerr: float) -> float:
+            return flux_from_mag(mag) * np.log(10.0) / 2.5 * magerr
+
+        validate_canonical_schema(catalog, bands=["u", "g", "r"], photometry="flux")
+        validate_canonical_schema(catalog, bands=["u", "g", "r"], photometry="mag")
+        np.testing.assert_allclose(catalog["mag_u"], [23.6, 24.2, 22.3])
+        np.testing.assert_allclose(catalog["mag_g"], [24.1, 24.7, 25.3])
+        np.testing.assert_allclose(catalog["mag_r"], [23.1, 23.7, 24.3])
+        np.testing.assert_allclose(
+            catalog["flux_g"],
+            [flux_from_mag(mag) for mag in [24.1, 24.7, 25.3]],
+        )
+        np.testing.assert_allclose(
+            catalog["fluxerr_g"],
+            [
+                fluxerr_from_magerr(mag, magerr)
+                for mag, magerr in zip([24.1, 24.7, 25.3], [0.03, 0.04, 0.05])
+            ],
+        )
+        self.assertEqual(list(catalog["mask_ok"]), [True, False, True])
+        np.testing.assert_allclose(catalog["ebv"], [0.01, 0.02, 0.03])
+        np.testing.assert_allclose(catalog["spec_z"], [0.41, -99.0, 0.82])
+        np.testing.assert_allclose(catalog["stellar_mass_log"], [10.1, 9.4, 9.8])
+
+        fallback = ClaudsSExtractorCatalogAdapter(config).adapt(
+            raw.drop(columns=["MASS_MED"])
+        )
+        np.testing.assert_allclose(
+            fallback["stellar_mass_log"],
+            [10.0, 9.4, 9.7],
+        )
 
     def test_selection_applies_minimal_masks_and_redshift_windows(self) -> None:
         catalog = pd.DataFrame(
@@ -827,6 +894,54 @@ class CatalogSampleSliceTest(unittest.TestCase):
         np.testing.assert_allclose(
             stacker._foreground_da,
             cosmo.angular_diameter_distance([0.3]).to_value("kpc"),
+        )
+
+    @unittest.skipUnless(SCIPY_AVAILABLE, "scipy is not installed")
+    def test_treecorr_stacker_builds_pair_distribution_diagnostics(self) -> None:
+        da = cosmo.angular_diameter_distance([0.3]).to_value("kpc")[0]
+        background_ra = np.rad2deg(np.array([50.0, 500.0]) / da)
+        foreground = pd.DataFrame(
+            {
+                "ra": [0.0],
+                "dec": [0.0],
+                "z_phot": [0.3],
+            }
+        )
+        background = pd.DataFrame(
+            {
+                "ra": background_ra,
+                "dec": [0.0, 0.0],
+                "z_phot": [0.8, 1.2],
+                "flux_g": [10.0, 10.0],
+                "fluxerr_g": [1.0, 1.0],
+                "flux_r": [10.0, 5.0],
+                "fluxerr_r": [1.0, 0.5],
+            }
+        )
+        stacker = TreeCorrStacker(
+            foreground=foreground,
+            background=background,
+            out_dir="unused",
+            colors=("g-r",),
+            modes=("fcolors",),
+            r_bin_edges=[5.0, 100.0, 1000.0],
+            jackknife=False,
+            random_correction=False,
+            flipped_correction=False,
+            diagnostic_photoz_bins=[0.0, 1.0, 2.0],
+            diagnostic_color_bins=[-2.0, -1.0, 0.0, 1.0],
+        )
+
+        stacker._load_samples()
+        arrays = stacker._diagnostic_arrays("fcolors", stacker._radial_bins())
+
+        np.testing.assert_allclose(
+            arrays["diagnostic_photoz_counts"],
+            [[1.0, 0.0], [0.0, 1.0]],
+        )
+        np.testing.assert_allclose(
+            arrays["g-r_diagnostic_color_counts"],
+            [[0.0, 0.0, 1.0], [0.0, 1.0, 0.0]],
         )
 
     def test_treecorr_stacker_can_disable_flipped_correction(self) -> None:
