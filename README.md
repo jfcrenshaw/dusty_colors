@@ -127,7 +127,10 @@ Stack options include `colors`, `modes` (`fcolors` and/or `mcolors`),
 `r_bin_edges` as an explicit list or `geomspace`/`linspace`/`logspace`,
 `reference_annulus`, `snr_max`, `bin_slop`, `num_threads`, `jackknife`,
 `patch_col`, `cross_patch_weight`, `random_correction`, `random_multiplier`,
-`random_seed`, and `random_nside`.
+`random_seed`, `random_nside`, and `flipped_correction`. Set
+`flipped_correction: false` to measure the forward stack minus the random
+forward stack, with the same reference-annulus subtraction, without subtracting
+foreground-color flipped stacks.
 
 Each analysis run also refreshes standard stack figures in
 `results/stacks/<analysis-id>`: one square log-log jackknife-sample plot for the

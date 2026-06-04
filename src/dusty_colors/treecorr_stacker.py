@@ -92,6 +92,7 @@ class TreeCorrStacker:
     random_multiplier: float = 5.0
     random_seed: int = 42
     random_nside: int = 1024
+    flipped_correction: bool = True
     prefer_observable_columns: bool = False
 
     def __post_init__(self) -> None:
@@ -185,10 +186,11 @@ class TreeCorrStacker:
                 self._validate_observable_columns(color, mode)
 
     def _validate_observable_columns(self, color: str, mode: ColorMode) -> None:
-        for label, catalog in (
-            (f"foreground {color}", self.foreground),
-            (f"background {color}", self.background),
-        ):
+        catalogs = [(f"background {color}", self.background)]
+        if self.flipped_correction:
+            catalogs.append((f"foreground {color}", self.foreground))
+
+        for label, catalog in catalogs:
             try:
                 build_observable(
                     catalog.iloc[:0],
@@ -426,20 +428,29 @@ class TreeCorrStacker:
         print(f"   stacking {mode} with TreeCorr...", end="", flush=True)
         for color in self.colors:
             print(f" {color}", end="", flush=True)
-            foreground = self._observable(self.foreground, color, mode)
             background = self._observable(self.background, color, mode)
+            foreground = (
+                self._observable(self.foreground, color, mode)
+                if self.flipped_correction
+                else None
+            )
 
             forward = self._profile(background, bins, ref_bin, mode, "forward")
-            flipped = self._profile(foreground, bins, ref_bin, mode, "flipped")
+            flipped = (
+                self._profile(foreground, bins, ref_bin, mode, "flipped")
+                if foreground is not None
+                else None
+            )
             random_forward = None
             random_flipped = None
             if self.random_correction:
                 random_forward = self._profile(
                     background, bins, ref_bin, mode, "forward", random=True
                 )
-                random_flipped = self._profile(
-                    foreground, bins, ref_bin, mode, "flipped", random=True
-                )
+                if foreground is not None:
+                    random_flipped = self._profile(
+                        foreground, bins, ref_bin, mode, "flipped", random=True
+                    )
 
             results.update(
                 self._result(
@@ -611,33 +622,49 @@ class TreeCorrStacker:
         bins: list[_RadialBin],
         mode: ColorMode,
         forward: _Profile,
-        flipped: _Profile,
+        flipped: _Profile | None,
         random_forward: _Profile | None = None,
         random_flipped: _Profile | None = None,
     ) -> dict[str, np.ndarray]:
-        has_random = random_forward is not None or random_flipped is not None
-        if has_random and (random_forward is None or random_flipped is None):
-            raise ValueError("Random correction requires both random profiles")
+        use_flipped = self.flipped_correction
+        if use_flipped and flipped is None:
+            raise ValueError("Flipped correction requires a flipped profile")
 
-        raw_delta = forward.color - flipped.color
-        raw_delta_err = np.hypot(forward.color_err, flipped.color_err)
-        raw_ref = forward.ref_color - flipped.ref_color
-        raw_ref_err = np.hypot(forward.ref_color_err, flipped.ref_color_err)
+        has_random = random_forward is not None or random_flipped is not None
+        if has_random and random_forward is None:
+            raise ValueError("Random correction requires a random forward profile")
+        if use_flipped and has_random and random_flipped is None:
+            raise ValueError(
+                "Random flipped correction requires a random flipped profile"
+            )
+
+        raw_delta = forward.color.copy()
+        raw_delta_err = forward.color_err.copy()
+        raw_ref = forward.ref_color
+        raw_ref_err = forward.ref_color_err
+        if use_flipped:
+            raw_delta = raw_delta - flipped.color
+            raw_delta_err = np.hypot(raw_delta_err, flipped.color_err)
+            raw_ref = raw_ref - flipped.ref_color
+            raw_ref_err = np.hypot(raw_ref_err, flipped.ref_color_err)
 
         random_delta = np.zeros_like(raw_delta)
         random_delta_err = np.zeros_like(raw_delta_err)
         random_ref = 0.0
         random_ref_err = 0.0
         if has_random:
-            random_delta = random_forward.color - random_flipped.color
-            random_delta_err = np.hypot(
-                random_forward.color_err, random_flipped.color_err
-            )
-            random_ref = random_forward.ref_color - random_flipped.ref_color
-            random_ref_err = np.hypot(
-                random_forward.ref_color_err,
-                random_flipped.ref_color_err,
-            )
+            random_delta = random_forward.color.copy()
+            random_delta_err = random_forward.color_err.copy()
+            random_ref = random_forward.ref_color
+            random_ref_err = random_forward.ref_color_err
+            if use_flipped:
+                random_delta = random_delta - random_flipped.color
+                random_delta_err = np.hypot(random_delta_err, random_flipped.color_err)
+                random_ref = random_ref - random_flipped.ref_color
+                random_ref_err = np.hypot(
+                    random_ref_err,
+                    random_flipped.ref_color_err,
+                )
 
         delta = raw_delta - random_delta
         delta_err = np.hypot(raw_delta_err, random_delta_err)
@@ -675,15 +702,20 @@ class TreeCorrStacker:
             f"{color}_uncorrected_avg": raw_delta - raw_ref,
             f"{color}_forward_avg": forward.color,
             f"{color}_forward_err": forward.color_err,
-            f"{color}_flipped_avg": flipped.color,
-            f"{color}_flipped_err": flipped.color_err,
             f"{color}_forward_raw_avg": forward.raw,
             f"{color}_forward_raw_err": forward.raw_err,
-            f"{color}_flipped_raw_avg": flipped.raw,
-            f"{color}_flipped_raw_err": flipped.raw_err,
             f"{color}_forward_npairs": forward.npairs,
-            f"{color}_flipped_npairs": flipped.npairs,
         }
+        if use_flipped:
+            result.update(
+                {
+                    f"{color}_flipped_avg": flipped.color,
+                    f"{color}_flipped_err": flipped.color_err,
+                    f"{color}_flipped_raw_avg": flipped.raw,
+                    f"{color}_flipped_raw_err": flipped.raw_err,
+                    f"{color}_flipped_npairs": flipped.npairs,
+                }
+            )
         if has_random:
             result.update(
                 {
@@ -693,16 +725,21 @@ class TreeCorrStacker:
                     f"{color}_random_ref_err": np.array(random_ref_err),
                     f"{color}_random_forward_avg": random_forward.color,
                     f"{color}_random_forward_err": random_forward.color_err,
-                    f"{color}_random_flipped_avg": random_flipped.color,
-                    f"{color}_random_flipped_err": random_flipped.color_err,
                     f"{color}_random_forward_raw_avg": random_forward.raw,
                     f"{color}_random_forward_raw_err": random_forward.raw_err,
-                    f"{color}_random_flipped_raw_avg": random_flipped.raw,
-                    f"{color}_random_flipped_raw_err": random_flipped.raw_err,
                     f"{color}_random_forward_npairs": random_forward.npairs,
-                    f"{color}_random_flipped_npairs": random_flipped.npairs,
                 }
             )
+            if use_flipped:
+                result.update(
+                    {
+                        f"{color}_random_flipped_avg": random_flipped.color,
+                        f"{color}_random_flipped_err": random_flipped.color_err,
+                        f"{color}_random_flipped_raw_avg": random_flipped.raw,
+                        f"{color}_random_flipped_raw_err": random_flipped.raw_err,
+                        f"{color}_random_flipped_npairs": random_flipped.npairs,
+                    }
+                )
         if jackknife is not None:
             result.update(
                 {
@@ -718,40 +755,45 @@ class TreeCorrStacker:
         self,
         mode: ColorMode,
         forward: _Profile,
-        flipped: _Profile,
+        flipped: _Profile | None,
         n_bins: int,
         random_forward: _Profile | None = None,
         random_flipped: _Profile | None = None,
     ) -> _JackknifeStats | None:
         if not getattr(self, "_use_jackknife", False):
             return None
-        has_random = random_forward is not None or random_flipped is not None
-        if has_random and (random_forward is None or random_flipped is None):
-            raise ValueError("Random correction requires both random profiles")
 
-        all_profile_corrs = forward.corrs + flipped.corrs
+        use_flipped = self.flipped_correction
+        if use_flipped and flipped is None:
+            raise ValueError("Flipped correction requires a flipped profile")
+
+        has_random = random_forward is not None or random_flipped is not None
+        if has_random and random_forward is None:
+            raise ValueError("Random correction requires a random forward profile")
+        if use_flipped and has_random and random_flipped is None:
+            raise ValueError(
+                "Random flipped correction requires a random flipped profile"
+            )
+
+        all_profile_corrs = list(forward.corrs)
+        if use_flipped:
+            all_profile_corrs += list(flipped.corrs)
         if has_random:
-            all_profile_corrs += random_forward.corrs + random_flipped.corrs
+            all_profile_corrs += list(random_forward.corrs)
+            if use_flipped:
+                all_profile_corrs += list(random_flipped.corrs)
         if any(len(corrs) == 0 for corrs in all_profile_corrs):
             return None
 
         corrs = []
-        iterator = zip(forward.corrs, flipped.corrs)
-        if has_random:
-            iterator = zip(
-                forward.corrs,
-                flipped.corrs,
-                random_forward.corrs,
-                random_flipped.corrs,
-            )
-        for profile_corrs in iterator:
-            forward_corrs = profile_corrs[0]
-            flipped_corrs = profile_corrs[1]
-            corrs.extend(forward_corrs)
-            corrs.extend(flipped_corrs)
+        for i in range(len(forward.corrs)):
+            corrs.extend(forward.corrs[i])
+            if use_flipped:
+                corrs.extend(flipped.corrs[i])
             if has_random:
-                corrs.extend(profile_corrs[2])
-                corrs.extend(profile_corrs[3])
+                corrs.extend(random_forward.corrs[i])
+                if use_flipped:
+                    corrs.extend(random_flipped.corrs[i])
 
         def read_forward(corrs: list[Any], i: int) -> tuple[float, int]:
             return corrs[i].xi[0], i + 1
@@ -774,27 +816,33 @@ class TreeCorrStacker:
                 value, i = read_forward(corrs, i)
                 raw_forward.append(value)
 
-                value, i = read_flipped(corrs, i)
-                raw_flipped.append(value)
+                if use_flipped:
+                    value, i = read_flipped(corrs, i)
+                    raw_flipped.append(value)
 
                 if has_random:
                     value, i = read_forward(corrs, i)
                     raw_random_forward.append(value)
 
-                    value, i = read_flipped(corrs, i)
-                    raw_random_flipped.append(value)
+                    if use_flipped:
+                        value, i = read_flipped(corrs, i)
+                        raw_random_flipped.append(value)
 
             forward_color = self._raw_to_color(np.array(raw_forward), mode)
-            flipped_color = self._raw_to_color(np.array(raw_flipped), mode)
-            delta = forward_color - flipped_color
+            delta = forward_color.copy()
+            if use_flipped:
+                flipped_color = self._raw_to_color(np.array(raw_flipped), mode)
+                delta -= flipped_color
             if has_random:
                 random_forward_color = self._raw_to_color(
                     np.array(raw_random_forward), mode
                 )
-                random_flipped_color = self._raw_to_color(
-                    np.array(raw_random_flipped), mode
-                )
-                delta -= random_forward_color - random_flipped_color
+                delta -= random_forward_color
+                if use_flipped:
+                    random_flipped_color = self._raw_to_color(
+                        np.array(raw_random_flipped), mode
+                    )
+                    delta += random_flipped_color
             ref = delta[-1]
             delta = delta[:-1]
             return delta - ref

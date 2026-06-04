@@ -870,6 +870,57 @@ class CatalogSampleSliceTest(unittest.TestCase):
             cosmo.angular_diameter_distance([0.3]).to_value("kpc"),
         )
 
+    def test_treecorr_stacker_can_disable_flipped_correction(self) -> None:
+        def profile(
+            color: list[float],
+            err: list[float],
+            ref_color: float,
+            ref_err: float,
+        ) -> types.SimpleNamespace:
+            color_array = np.asarray(color, dtype=float)
+            err_array = np.asarray(err, dtype=float)
+            return types.SimpleNamespace(
+                raw=color_array,
+                raw_err=err_array,
+                color=color_array,
+                color_err=err_array,
+                weight=np.ones_like(color_array),
+                npairs=np.ones_like(color_array),
+                ref_color=ref_color,
+                ref_color_err=ref_err,
+                corrs=[],
+            )
+
+        stacker = TreeCorrStacker(
+            foreground=pd.DataFrame(),
+            background=pd.DataFrame(),
+            out_dir="unused",
+            flipped_correction=False,
+        )
+        bins = [
+            types.SimpleNamespace(center=10.0),
+            types.SimpleNamespace(center=20.0),
+        ]
+        forward = profile([1.0, 2.0], [0.1, 0.2], 0.5, 0.05)
+        random_forward = profile([0.2, 0.4], [0.02, 0.04], 0.1, 0.01)
+
+        result = stacker._result(
+            "g-i",
+            bins,
+            "mcolors",
+            forward,
+            None,
+            random_forward,
+            None,
+        )
+
+        np.testing.assert_allclose(result["g-i_delta_avg"], [0.8, 1.6])
+        self.assertEqual(float(result["g-i_ref_avg"]), 0.4)
+        np.testing.assert_allclose(result["g-i_avg"], [0.4, 1.2])
+        np.testing.assert_allclose(result["g-i_uncorrected_avg"], [0.5, 1.5])
+        self.assertNotIn("g-i_flipped_avg", result)
+        self.assertNotIn("g-i_random_flipped_avg", result)
+
 
 if __name__ == "__main__":
     unittest.main()
