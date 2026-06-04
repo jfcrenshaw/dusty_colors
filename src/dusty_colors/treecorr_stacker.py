@@ -27,6 +27,15 @@ class _RadialBin:
 
 
 @dataclass
+class _BinResult:
+    raw: float
+    raw_err: float
+    weight: float
+    npairs: float
+    corrs: tuple[Any, ...]
+
+
+@dataclass
 class _Profile:
     raw: np.ndarray
     raw_err: np.ndarray
@@ -36,6 +45,15 @@ class _Profile:
     npairs: np.ndarray
     ref_color: float
     ref_color_err: float
+    corrs: list[tuple[Any, ...]]
+
+
+@dataclass
+class _JackknifeStats:
+    mean: np.ndarray
+    err: np.ndarray
+    covariance: np.ndarray
+    samples: np.ndarray
 
 
 @dataclass
@@ -71,6 +89,9 @@ class TreeCorrStacker:
 
     bin_slop: float = 0.0
     num_threads: int | None = None
+    jackknife: bool = True
+    patch_col: str = "jackknife_region"
+    cross_patch_weight: str = "match"
 
     exclude_jk: int | None = None
     select_jk: int | None = None
@@ -86,6 +107,7 @@ class TreeCorrStacker:
 
         self._fg_pos_cat: Any | None = None
         self._bg_pos_cat: Any | None = None
+        self._treecorr_patch_col = "_treecorr_patch"
 
     def run(
         self,
@@ -122,7 +144,7 @@ class TreeCorrStacker:
             forward = self._profile(background, bins, ref_bin, mode, "forward")
             flipped = self._profile(foreground, bins, ref_bin, mode, "flipped")
 
-            results.update(self._result(color, bins, forward, flipped))
+            results.update(self._result(color, bins, mode, forward, flipped))
         print(".")
 
         np.savez_compressed(self._stack_file(mode), **results)
@@ -137,9 +159,9 @@ class TreeCorrStacker:
         if self.exclude_jk is not None or self.select_jk is not None:
             region = self.exclude_jk if self.exclude_jk is not None else self.select_jk
             query = (
-                f"jackknife_region != {region}"
+                f"{self.patch_col} != {region}"
                 if self.exclude_jk is not None
-                else f"jackknife_region == {region}"
+                else f"{self.patch_col} == {region}"
             )
             self._foreground = self._foreground.query(query).reset_index(drop=True)
             self._background = self._background.query(query).reset_index(drop=True)
@@ -148,6 +170,7 @@ class TreeCorrStacker:
             self._foreground["z_phot"].to_numpy(float)
         ).value
         self._drop_bad_positions()
+        self._setup_jackknife()
         self._fg_pos_cat = None
         self._bg_pos_cat = None
 
@@ -175,6 +198,53 @@ class TreeCorrStacker:
             raise ValueError(
                 "Foreground and background catalogs must both be non-empty"
             )
+
+    def _setup_jackknife(self) -> None:
+        self._use_jackknife = False
+        self._npatch = 1
+        if not self.jackknife:
+            return
+
+        if (
+            self.patch_col not in self._foreground
+            or self.patch_col not in self._background
+        ):
+            raise ValueError(f"Jackknife patch column '{self.patch_col}' not found")
+
+        fg_patch = self._foreground[self.patch_col].to_numpy(int)
+        bg_patch = self._background[self.patch_col].to_numpy(int)
+        patches = np.intersect1d(np.unique(fg_patch), np.unique(bg_patch))
+        if len(patches) < 2:
+            raise ValueError(
+                "TreeCorr jackknife covariance needs at least two patches shared "
+                "by the foreground and background catalogs"
+            )
+
+        fg_keep = np.isin(fg_patch, patches)
+        bg_keep = np.isin(bg_patch, patches)
+        n_fg_drop = int(np.sum(~fg_keep))
+        n_bg_drop = int(np.sum(~bg_keep))
+        if n_fg_drop or n_bg_drop:
+            print(
+                "   TreeCorr jackknife using "
+                f"{len(patches)} shared patches; dropped "
+                f"{n_fg_drop} foreground and {n_bg_drop} background objects "
+                "outside the shared patch set"
+            )
+            self._foreground = self._foreground.loc[fg_keep].reset_index(drop=True)
+            self._foreground_da = self._foreground_da[fg_keep]
+            self._background = self._background.loc[bg_keep].reset_index(drop=True)
+
+        patch_map = {patch: i for i, patch in enumerate(patches)}
+        self._foreground[self._treecorr_patch_col] = [
+            patch_map[patch] for patch in self._foreground[self.patch_col].to_numpy(int)
+        ]
+        self._background[self._treecorr_patch_col] = [
+            patch_map[patch] for patch in self._background[self.patch_col].to_numpy(int)
+        ]
+
+        self._npatch = len(patches)
+        self._use_jackknife = True
 
     def _observable(
         self, catalog: pd.DataFrame, color: str, mode: ColorMode
@@ -209,8 +279,14 @@ class TreeCorrStacker:
         direction: StackDirection,
     ) -> _Profile:
         value, err, good = observable
+        bin_results = [
+            self._stack_bin(value, err, good, b, direction) for b in bins + [ref_bin]
+        ]
         rows = np.array(
-            [self._stack_bin(value, err, good, b, direction) for b in bins + [ref_bin]]
+            [
+                (result.raw, result.raw_err, result.weight, result.npairs)
+                for result in bin_results
+            ]
         )
 
         raw = rows[:-1, 0]
@@ -227,6 +303,7 @@ class TreeCorrStacker:
             npairs=rows[:-1, 3],
             ref_color=float(ref_color[0]),
             ref_color_err=float(ref_color_err[0]),
+            corrs=[result.corrs for result in bin_results],
         )
 
     def _stack_bin(
@@ -236,21 +313,23 @@ class TreeCorrStacker:
         good: np.ndarray,
         radial_bin: _RadialBin,
         direction: StackDirection,
-    ) -> tuple[float, float, float, float]:
-        mean, count_weight, npairs = self._pair_mean(value, good, radial_bin, direction)
-        mean2, _, _ = self._pair_mean(value**2, good, radial_bin, direction)
+    ) -> _BinResult:
+        mean, count_weight, npairs, _ = self._pair_mean(
+            value, good, radial_bin, direction
+        )
+        mean2, _, _, _ = self._pair_mean(value**2, good, radial_bin, direction)
         if count_weight == 0 or not np.isfinite(mean) or not np.isfinite(mean2):
-            return np.nan, np.nan, 0.0, npairs
+            return _BinResult(np.nan, np.nan, 0.0, npairs, ())
 
         variance_floor = max(mean2 - mean**2, 0.0)
         weight = np.zeros_like(err)
         weight[good] = 1.0 / (err[good] ** 2 + variance_floor)
 
-        avg, weight_sum, npairs = self._pair_mean(
+        avg, weight_sum, npairs, corrs = self._pair_mean(
             value, good, radial_bin, direction, weight
         )
         avg_err = np.sqrt(1.0 / weight_sum) if weight_sum > 0 else np.nan
-        return avg, avg_err, weight_sum, npairs
+        return _BinResult(avg, avg_err, weight_sum, npairs, corrs)
 
     def _pair_mean(
         self,
@@ -259,9 +338,9 @@ class TreeCorrStacker:
         radial_bin: _RadialBin,
         direction: StackDirection,
         weight: np.ndarray | None = None,
-    ) -> tuple[float, float, float]:
+    ) -> tuple[float, float, float, tuple[Any, ...]]:
         if not np.any(good):
-            return np.nan, 0.0, 0.0
+            return np.nan, 0.0, 0.0, ()
 
         if direction == "forward":
             source = self._background_catalog(
@@ -278,6 +357,7 @@ class TreeCorrStacker:
                 self._safe_mean(corr.xi[0], corr.weight[0]),
                 corr.weight[0],
                 corr.npairs[0],
+                (corr,),
             )
 
         pair_weight = np.ones(np.sum(good)) if weight is None else weight[good]
@@ -289,7 +369,7 @@ class TreeCorrStacker:
             num_threads=self.num_threads,
         )
         if denominator.weight[0] == 0:
-            return np.nan, 0.0, denominator.npairs[0]
+            return np.nan, 0.0, denominator.npairs[0], ()
 
         numerator = self._nn(radial_bin)
         numerator.process(
@@ -302,12 +382,14 @@ class TreeCorrStacker:
             numerator.weight[0] / denominator.weight[0],
             denominator.weight[0],
             denominator.npairs[0],
+            (numerator, denominator),
         )
 
     def _result(
         self,
         color: str,
         bins: list[_RadialBin],
+        mode: ColorMode,
         forward: _Profile,
         flipped: _Profile,
     ) -> dict[str, np.ndarray]:
@@ -316,12 +398,19 @@ class TreeCorrStacker:
         ref = forward.ref_color - flipped.ref_color
         ref_err = np.hypot(forward.ref_color_err, flipped.ref_color_err)
         estimator = delta - ref
-        estimator_err = np.hypot(delta_err, ref_err)
+        analytic_err = np.hypot(delta_err, ref_err)
+        jackknife = self._jackknife_stats(mode, forward, flipped, len(bins))
+        covariance = (
+            jackknife.covariance if jackknife is not None else np.diag(analytic_err**2)
+        )
+        estimator_err = jackknife.err if jackknife is not None else analytic_err
 
-        return {
+        result = {
             f"{color}_bin_centers": self._bin_centers(bins),
             f"{color}_avg": estimator,
             f"{color}_err": estimator_err,
+            f"{color}_cov": covariance,
+            f"{color}_analytic_err": analytic_err,
             f"{color}_delta_avg": delta,
             f"{color}_delta_err": delta_err,
             f"{color}_ref_avg": np.array(ref),
@@ -337,6 +426,73 @@ class TreeCorrStacker:
             f"{color}_forward_npairs": forward.npairs,
             f"{color}_flipped_npairs": flipped.npairs,
         }
+        if jackknife is not None:
+            result.update(
+                {
+                    f"{color}_jackknife_avg": jackknife.mean,
+                    f"{color}_jackknife_err": jackknife.err,
+                    f"{color}_jackknife_samples": jackknife.samples,
+                    f"{color}_jackknife_patch": np.arange(jackknife.samples.shape[0]),
+                }
+            )
+        return result
+
+    def _jackknife_stats(
+        self,
+        mode: ColorMode,
+        forward: _Profile,
+        flipped: _Profile,
+        n_bins: int,
+    ) -> _JackknifeStats | None:
+        if not getattr(self, "_use_jackknife", False):
+            return None
+        if any(len(corrs) == 0 for corrs in forward.corrs + flipped.corrs):
+            return None
+
+        corrs = []
+        for forward_corrs, flipped_corrs in zip(forward.corrs, flipped.corrs):
+            corrs.extend(forward_corrs)
+            corrs.extend(flipped_corrs)
+
+        def estimator(corrs: list[Any]) -> np.ndarray:
+            raw_forward = []
+            raw_flipped = []
+            i = 0
+            for _ in range(n_bins + 1):
+                raw_forward.append(corrs[i].xi[0])
+                i += 1
+
+                numerator = corrs[i]
+                denominator = corrs[i + 1]
+                i += 2
+                if denominator.weight[0] == 0:
+                    raw_flipped.append(np.nan)
+                else:
+                    raw_flipped.append(numerator.weight[0] / denominator.weight[0])
+
+            forward_color = self._raw_to_color(np.array(raw_forward), mode)
+            flipped_color = self._raw_to_color(np.array(raw_flipped), mode)
+            delta = forward_color[:-1] - flipped_color[:-1]
+            ref = forward_color[-1] - flipped_color[-1]
+            return delta - ref
+
+        samples, _ = treecorr.build_multi_cov_design_matrix(
+            corrs,
+            method="jackknife",
+            func=estimator,
+            cross_patch_weight=self.cross_patch_weight,
+        )
+        mean = np.mean(samples, axis=0)
+        centered = samples - mean
+        covariance = (1.0 - 1.0 / samples.shape[0]) * centered.conj().T.dot(centered)
+        covariance = np.real_if_close(covariance)
+        err = np.sqrt(np.clip(np.diag(covariance), 0, None))
+        return _JackknifeStats(
+            mean=mean,
+            err=err,
+            covariance=covariance,
+            samples=samples,
+        )
 
     def _foreground_position_catalog(self) -> Any:
         if self._fg_pos_cat is None:
@@ -376,6 +532,46 @@ class TreeCorrStacker:
         k: np.ndarray | None = None,
         w: np.ndarray | None = None,
     ) -> Any:
+        radial_distance = np.asarray(radial_distance, dtype=float)
+        k = None if k is None else np.asarray(k, dtype=float)
+        w = None if w is None else np.asarray(w, dtype=float)
+        if getattr(self, "_use_jackknife", False):
+            return self._patch_catalogs(catalog, radial_distance, k=k, w=w)
+        return treecorr.Catalog(
+            **self._catalog_kwargs(catalog, radial_distance, k=k, w=w)
+        )
+
+    def _patch_catalogs(
+        self,
+        catalog: pd.DataFrame,
+        radial_distance: np.ndarray,
+        *,
+        k: np.ndarray | None = None,
+        w: np.ndarray | None = None,
+    ) -> list[Any]:
+        patch = catalog[self._treecorr_patch_col].to_numpy(int)
+        catalogs = []
+        for patch_id in np.unique(patch):
+            use = patch == patch_id
+            kwargs = self._catalog_kwargs(
+                catalog.loc[use],
+                radial_distance[use],
+                k=None if k is None else k[use],
+                w=None if w is None else w[use],
+            )
+            kwargs["patch"] = int(patch_id)
+            kwargs["npatch"] = self._npatch
+            catalogs.append(treecorr.Catalog(**kwargs))
+        return catalogs
+
+    def _catalog_kwargs(
+        self,
+        catalog: pd.DataFrame,
+        radial_distance: np.ndarray,
+        *,
+        k: np.ndarray | None = None,
+        w: np.ndarray | None = None,
+    ) -> dict[str, Any]:
         kwargs = {
             "ra": catalog["coord_ra"].to_numpy(float),
             "dec": catalog["coord_dec"].to_numpy(float),
@@ -387,7 +583,7 @@ class TreeCorrStacker:
             kwargs["k"] = k
         if w is not None:
             kwargs["w"] = w
-        return treecorr.Catalog(**kwargs)
+        return kwargs
 
     def _radial_bins(self) -> list[_RadialBin]:
         edges = np.asarray(self.r_bin_edges, dtype=float)
@@ -459,6 +655,15 @@ class TreeCorrStacker:
         color[good] = -2.5 * np.log10(avg[good])
         color_err[good] = 2.5 / np.log(10.0) * err[good] / avg[good]
         return color, color_err
+
+    def _raw_to_color(self, raw: np.ndarray, mode: ColorMode) -> np.ndarray:
+        if mode == "mcolors":
+            return raw.copy()
+
+        color = np.full_like(raw, np.nan, dtype=float)
+        good = np.isfinite(raw) & (raw > 0)
+        color[good] = -2.5 * np.log10(raw[good])
+        return color
 
     def _safe_mean(self, value: float, weight: float) -> float:
         return np.nan if weight == 0 or not np.isfinite(value) else float(value)

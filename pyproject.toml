@@ -23,6 +23,7 @@ dependencies = [
     "pyarrow>=21.0",
     "healpy>=1.19",
     "healsparse>=1.11",
+    "treecorr>=5.1",
     "kcorrect>=5.1",
     "seaborn>=0.13",
     "dust_extinction>=1.7",

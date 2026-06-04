@@ -10,3 +10,4 @@ dependencies:
   - pyarrow
   - matplotlib
   - jupyterlab
+  - treecorr
