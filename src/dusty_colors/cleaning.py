@@ -75,7 +75,7 @@ def add_diagnostic_columns(
 
 
 def clean_sample(catalog: pd.DataFrame, config: Mapping[str, Any]) -> pd.DataFrame:
-    """Apply optional sample cleaning without overwriting raw photometry."""
+    """Apply optional sample cleaning."""
     cleaned = catalog.copy()
     if not config or not bool(config.get("enabled", False)):
         return cleaned
@@ -100,11 +100,31 @@ def clean_sample(catalog: pd.DataFrame, config: Mapping[str, Any]) -> pd.DataFra
             _cleaning_mapping(trend, "redshift_trend"),
         )
 
+    column_trend = config.get(
+        "column_redshift_trend",
+        config.get("column_redshift_trend_removal"),
+    )
+    if column_trend:
+        cleaned = apply_column_redshift_trend_removal(
+            cleaned,
+            _cleaning_mapping(column_trend, "column_redshift_trend"),
+        )
+
     forest = config.get("isolation_forest", config.get("isolationforest"))
     if forest:
         cleaned = apply_isolation_forest(
             cleaned,
             _cleaning_mapping(forest, "isolation_forest"),
+        )
+
+    column_forest = config.get(
+        "column_isolation_forest",
+        config.get("per_column_isolation_forest"),
+    )
+    if column_forest:
+        cleaned = apply_column_isolation_forest(
+            cleaned,
+            _cleaning_mapping(column_forest, "column_isolation_forest"),
         )
 
     legacy = config.get("legacy_photometry")
@@ -211,6 +231,63 @@ def remove_redshift_trends(
     return out
 
 
+def apply_column_redshift_trend_removal(
+    catalog: pd.DataFrame,
+    config: Mapping[str, Any],
+) -> pd.DataFrame:
+    """Remove binned redshift trends from selected columns."""
+    if not bool(config.get("enabled", True)):
+        return catalog.copy()
+
+    method = str(config.get("method", "binned_median")).lower()
+    if method not in {"binned_median", "legacy_binned_median"}:
+        raise ValueError("column_redshift_trend.method must be 'binned_median'")
+
+    columns = _required_columns(config, "column_redshift_trend")
+    redshift_col = str(
+        config.get("redshift_col", config.get("redshift_column", "z_phot"))
+    )
+    if redshift_col not in catalog:
+        raise ValueError(
+            f"Column redshift trend requested missing column: {redshift_col}"
+        )
+
+    output = config.get("output")
+    if output is not None:
+        output = str(output).lower()
+        if output not in {"overwrite", "suffix"}:
+            raise ValueError(
+                "column_redshift_trend.output must be 'overwrite' or 'suffix'"
+            )
+        overwrite = output == "overwrite"
+    else:
+        overwrite = bool(config.get("overwrite", False))
+
+    output_suffix = str(config.get("output_suffix", "_z_detrended"))
+    bin_width_value = config.get("bin_width", config.get("redshift_bin_width", 0.04))
+    bin_width = float(bin_width_value)
+    out = catalog.copy()
+    redshift = out[redshift_col].to_numpy(float)
+
+    for col in columns:
+        if col not in out:
+            raise ValueError(f"Column redshift trend requested missing column: {col}")
+        output_col = col if overwrite else f"{col}{output_suffix}"
+        if not overwrite:
+            _ensure_new_columns(out, [output_col], source=col)
+
+        mode = _column_redshift_trend_mode(col, config)
+        out[output_col] = _binned_median_redshift_detrended(
+            out[col].to_numpy(float),
+            redshift,
+            flux_like=mode == "multiplicative",
+            bin_width=bin_width,
+            config_name="column_redshift_trend",
+        )
+
+    return out
+
+
 def apply_isolation_forest(
     catalog: pd.DataFrame,
     config: Mapping[str, Any],
@@ -264,6 +341,49 @@ def apply_isolation_forest(
     keep = ~finite if not drop_nonfinite else np.zeros(len(out), dtype=bool)
     keep[finite] = labels == 1
     return out.loc[keep].reset_index(drop=True)
+
+
+def apply_column_isolation_forest(
+    catalog: pd.DataFrame,
+    config: Mapping[str, Any],
+) -> pd.DataFrame:
+    """Mark per-column outliers as NaN while preserving sample rows."""
+    if not bool(config.get("enabled", True)):
+        return catalog.copy()
+
+    try:
+        from sklearn.ensemble import IsolationForest
+    except ImportError as exc:
+        raise ImportError(
+            "Column IsolationForest cleaning requires scikit-learn. Install the "
+            "project dependencies or add scikit-learn to your environment."
+        ) from exc
+
+    columns = _required_columns(config, "column_isolation_forest")
+    context_columns = _context_columns(config)
+    out = catalog.copy()
+    for col in columns + context_columns:
+        if col not in out:
+            raise ValueError(f"Column IsolationForest requested missing column: {col}")
+
+    min_samples = int(config.get("min_samples", 2))
+    if min_samples < 1:
+        raise ValueError("column_isolation_forest.min_samples must be positive")
+
+    for col in columns:
+        feature_cols = [col] + context_columns
+        features = out[feature_cols].to_numpy(float)
+        finite = np.isfinite(features).all(axis=1)
+        if np.sum(finite) < min_samples:
+            continue
+
+        scaled = _scaled_features(features[finite], config)
+        model = IsolationForest(**_isolation_forest_kwargs(config))
+        keep = model.fit_predict(scaled) == 1
+        finite_indices = np.where(finite)[0]
+        out.loc[finite_indices[~keep], col] = np.nan
+
+    return out
 
 
 def _with_legacy_observable_columns(
@@ -328,8 +448,25 @@ def _legacy_redshift_detrended(
     flux_like: bool,
     bin_width: float,
 ) -> np.ndarray:
+    return _binned_median_redshift_detrended(
+        values,
+        redshift,
+        flux_like=flux_like,
+        bin_width=bin_width,
+        config_name="legacy_photometry",
+    )
+
+
+def _binned_median_redshift_detrended(
+    values: np.ndarray,
+    redshift: np.ndarray,
+    *,
+    flux_like: bool,
+    bin_width: float,
+    config_name: str,
+) -> np.ndarray:
     if bin_width <= 0:
-        raise ValueError("legacy_photometry.redshift_bin_width must be positive")
+        raise ValueError(f"{config_name}.bin_width must be positive")
 
     out = values.astype(float, copy=True)
     finite = np.isfinite(values) & np.isfinite(redshift)
@@ -339,9 +476,7 @@ def _legacy_redshift_detrended(
     try:
         from scipy.stats import binned_statistic
     except ImportError as exc:
-        raise ImportError(
-            "legacy_photometry redshift detrending requires scipy"
-        ) from exc
+        raise ImportError(f"{config_name} redshift detrending requires scipy") from exc
 
     bins = np.arange(
         np.nanmin(redshift) - 2.0 * bin_width,
@@ -454,6 +589,52 @@ def _required_columns(config: Mapping[str, Any], name: str) -> list[str]:
     if not columns:
         raise ValueError(f"cleaning.{name}.columns must not be empty")
     return [str(col) for col in columns]
+
+
+def _context_columns(config: Mapping[str, Any]) -> list[str]:
+    columns = config.get("context_columns", config.get("context", []))
+    if isinstance(columns, str):
+        columns = [columns]
+    redshift_col = config.get("redshift_col", config.get("redshift_column"))
+    if redshift_col is not None:
+        columns = [*columns, str(redshift_col)]
+    unique = []
+    seen = set()
+    for col in columns:
+        col = str(col)
+        if col not in seen:
+            unique.append(col)
+            seen.add(col)
+    return unique
+
+
+def _column_redshift_trend_mode(column: str, config: Mapping[str, Any]) -> str:
+    column_modes = config.get("column_modes", {})
+    if column_modes is None:
+        column_modes = {}
+    if not isinstance(column_modes, Mapping):
+        raise ValueError("column_redshift_trend.column_modes must be a mapping")
+
+    mode = column_modes.get(column, config.get("mode", "auto"))
+    mode = str(mode).lower()
+    if mode == "auto":
+        return "multiplicative" if _legacy_flux_like(column) else "additive"
+
+    aliases = {
+        "flux": "multiplicative",
+        "ratio": "multiplicative",
+        "multiplicative": "multiplicative",
+        "mag": "additive",
+        "magnitude": "additive",
+        "color": "additive",
+        "additive": "additive",
+    }
+    if mode not in aliases:
+        raise ValueError(
+            "column_redshift_trend.mode must be 'auto', 'flux', 'mag', "
+            "'color', 'multiplicative', or 'additive'"
+        )
+    return aliases[mode]
 
 
 def _ensure_new_columns(

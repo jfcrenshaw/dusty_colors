@@ -79,5 +79,3 @@ footprint:
     ECDFS: {ra: 53.13, dec: -28.10}
     EDFS: {ra: 59.10, dec: -48.73}
     "Rubin SV 95 -25": {ra: 95.00, dec: -25.00}
-jackknife:
-  regions_per_field: 3

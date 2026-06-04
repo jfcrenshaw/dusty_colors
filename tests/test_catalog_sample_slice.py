@@ -37,6 +37,7 @@ from dusty_colors.treecorr_stacker import TreeCorrStacker
 from astropy.cosmology import Planck18 as cosmo
 
 SKLEARN_AVAILABLE = importlib.util.find_spec("sklearn") is not None
+SCIPY_AVAILABLE = importlib.util.find_spec("scipy") is not None
 
 
 class CatalogSampleSliceTest(unittest.TestCase):
@@ -604,6 +605,72 @@ class CatalogSampleSliceTest(unittest.TestCase):
         cleaned = clean_sample(catalog, config)
 
         self.assertEqual(list(cleaned["object_id"]), [1, 2, 3, 4, 5])
+
+    @unittest.skipUnless(SKLEARN_AVAILABLE, "scikit-learn is not installed")
+    def test_column_isolation_forest_masks_values_without_dropping_rows(self) -> None:
+        catalog = pd.DataFrame(
+            {
+                "object_id": [1, 2, 3, 4, 5, 99],
+                "z_phot": [0.8, 0.82, 0.84, 0.86, 0.88, 0.9],
+                "flux_g": [10.0, 10.1, 9.9, 10.2, 9.8, 200.0],
+                "flux_r": [5.0, 5.1, 4.9, 5.2, 4.8, 5.0],
+            }
+        )
+        config = {
+            "enabled": True,
+            "column_isolation_forest": {
+                "columns": ["flux_g"],
+                "redshift_col": "z_phot",
+                "contamination": 1.0 / 6.0,
+                "random_state": 7,
+                "n_estimators": 64,
+                "max_samples": 6,
+                "scale": "none",
+            },
+        }
+
+        cleaned = clean_sample(catalog, config)
+
+        self.assertEqual(list(cleaned["object_id"]), [1, 2, 3, 4, 5, 99])
+        self.assertTrue(np.isnan(cleaned.loc[5, "flux_g"]))
+        self.assertEqual(cleaned.loc[5, "flux_r"], 5.0)
+
+    @unittest.skipUnless(SCIPY_AVAILABLE, "scipy is not installed")
+    def test_column_redshift_trend_overwrites_flux_without_dropping_rows(self) -> None:
+        redshift = np.linspace(0.7, 1.35, 80)
+        flux_g = 50.0 * (1.0 + redshift)
+        catalog = pd.DataFrame(
+            {
+                "object_id": np.arange(len(redshift)),
+                "z_phot": redshift,
+                "flux_g": flux_g,
+                "flux_r": np.full(len(redshift), 5.0),
+            }
+        )
+        config = {
+            "enabled": True,
+            "column_redshift_trend": {
+                "columns": ["flux_g"],
+                "redshift_col": "z_phot",
+                "bin_width": 0.04,
+                "mode": "flux",
+                "overwrite": True,
+            },
+        }
+
+        cleaned = clean_sample(catalog, config)
+
+        self.assertEqual(list(cleaned["object_id"]), list(catalog["object_id"]))
+        self.assertNotIn("flux_g_z_detrended", cleaned)
+        np.testing.assert_allclose(cleaned["flux_r"], catalog["flux_r"])
+        original_slope = np.polyfit(redshift, flux_g, 1)[0]
+        cleaned_slope = np.polyfit(redshift, cleaned["flux_g"], 1)[0]
+        self.assertLess(abs(cleaned_slope), 0.05 * abs(original_slope))
+        np.testing.assert_allclose(
+            np.nanmedian(cleaned["flux_g"]),
+            np.nanmedian(flux_g),
+            rtol=1.0e-3,
+        )
 
     def test_redshift_trend_adds_detrended_columns_without_overwriting(self) -> None:
         catalog = pd.DataFrame(
