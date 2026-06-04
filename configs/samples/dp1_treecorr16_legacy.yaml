@@ -1,13 +1,12 @@
 id: dp1_treecorr16_legacy
-catalog: configs/catalogs/dp1.yaml
+catalog: configs/catalogs/dp1_processed_legacy.yaml
 selection:
   foreground_z: [0.2, 0.5]
   background_z: [0.7, 1.4]
   shared_query: z_phot_err < 0.2 and z_phot_diff < 0.2
   pixel_depth_cuts:
     pixel_col: pixel
-    fluxerr_template: cmodel_fluxerr_{band}
-    sigma: 5
+    depth_template: depth5_{band}
     window:
       bands: [u, g, r, i, z, y]
       min: 20.0
@@ -46,6 +45,8 @@ selection:
 footprint:
   enabled: true
   columns: [ra, dec, field, pixel, jackknife_region]
+jackknife:
+  regions_per_field: 3
 cleaning:
   foreground:
     enabled: false

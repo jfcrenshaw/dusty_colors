@@ -428,6 +428,44 @@ class CatalogSampleSliceTest(unittest.TestCase):
         self.assertEqual(list(samples["background"]["object_id"]), [3])
         self.assertEqual(list(samples["footprint"]["object_id"]), [1, 3])
 
+    def test_selection_can_reassign_jackknife_after_sample_cuts(self) -> None:
+        catalog = pd.DataFrame(
+            {
+                "object_id": [1, 2, 3, 4],
+                "ra": [0.0, 1.0, 2.0, 3.0],
+                "dec": [-1.0, 1.0, -1.0, 1.0],
+                "field": ["A", "A", "A", "A"],
+                "pixel": [10, 10, 11, 11],
+                "jackknife_region": [99, 99, 99, 99],
+                "z_phot": [0.3, 0.4, 0.8, 0.9],
+                "z_phot_err": [0.03] * 4,
+                "is_galaxy": [True] * 4,
+                "mask_ok": [True] * 4,
+                "quality_ok": [True] * 4,
+                "flux_g": [10.0] * 4,
+                "fluxerr_g": [1.0] * 4,
+                "flux_r": [5.0] * 4,
+                "fluxerr_r": [1.0] * 4,
+            }
+        )
+        config = {
+            "selection": {
+                "foreground_z": [0.2, 0.5],
+                "background_z": [0.7, 1.4],
+            },
+            "footprint": {
+                "enabled": True,
+                "columns": ["object_id", "pixel", "jackknife_region"],
+            },
+            "jackknife": {"regions_per_field": 2},
+        }
+
+        samples = select_samples(catalog, config, bands=["g", "r"], photometry="flux")
+
+        self.assertEqual(list(samples["foreground"]["jackknife_region"]), [0, 1])
+        self.assertEqual(list(samples["background"]["jackknife_region"]), [0, 1])
+        self.assertEqual(list(samples["footprint"]["jackknife_region"]), [0, 1, 0, 1])
+
     def test_sample_outputs_write_foreground_and_background(self) -> None:
         with TemporaryDirectory() as tmp:
             samples = {

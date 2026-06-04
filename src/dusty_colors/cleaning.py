@@ -336,35 +336,29 @@ def _legacy_redshift_detrended(
     if np.sum(finite) < 2:
         return out
 
-    z_finite = redshift[finite]
-    z_min = np.nanmin(z_finite)
-    z_max = np.nanmax(z_finite)
-    bins = np.arange(z_min - 2.0 * bin_width, z_max + 2.0 * bin_width, bin_width)
+    try:
+        from scipy.stats import binned_statistic
+    except ImportError as exc:
+        raise ImportError(
+            "legacy_photometry redshift detrending requires scipy"
+        ) from exc
+
+    bins = np.arange(
+        np.nanmin(redshift) - 2.0 * bin_width,
+        np.nanmax(redshift) + 2.0 * bin_width,
+        bin_width,
+    )
     if len(bins) < 2:
         return out
 
-    medians = []
-    centers = []
-    for lo, hi in zip(bins[:-1], bins[1:]):
-        use = finite & (redshift >= lo) & (redshift < hi)
-        if np.any(use):
-            medians.append(np.nanmedian(values[use]))
-        else:
-            medians.append(np.nan)
-        centers.append(0.5 * (lo + hi))
-    medians = np.asarray(medians, dtype=float)
-    centers = np.asarray(centers, dtype=float)
-    good_bins = np.isfinite(medians)
-    if np.sum(good_bins) < 2:
-        return out
-
-    trend = np.interp(
-        redshift[finite],
-        centers[good_bins],
-        medians[good_bins],
-        left=medians[good_bins][0],
-        right=medians[good_bins][-1],
+    medians, bin_edges, _ = binned_statistic(
+        redshift,
+        values,
+        statistic=np.nanmedian,
+        bins=bins,
     )
+    centers = 0.5 * (bin_edges[1:] + bin_edges[:-1])
+    trend = np.interp(redshift[finite], centers, medians)
     center = np.nanmedian(values[finite])
     if flux_like:
         good_trend = np.isfinite(trend) & (trend != 0)

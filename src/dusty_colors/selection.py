@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 
 from .cleaning import apply_minimal_cleaning, clean_sample
+from .footprint import assign_jackknife_regions
 
 MAGSYS_ZEROPOINT = 31.4
 
@@ -31,6 +32,9 @@ def select_samples(
         photometry=photometry,
     )
     selected = selected.loc[_base_mask(selected, selection)].reset_index(drop=True)
+    jackknife = _enabled_option(config, "jackknife")
+    if jackknife is not None:
+        selected = _assign_sample_jackknife(selected, jackknife)
     footprint = _sample_footprint(selected, config.get("footprint"))
 
     foreground = _redshift_slice(selected, selection["foreground_z"])
@@ -323,6 +327,7 @@ def _pixel_depth_cut_mask(
     pixel_col = str(config.get("pixel_col", "pixel"))
     if pixel_col not in catalog:
         raise ValueError(f"Pixel depth cuts requested missing column: {pixel_col}")
+    depth_template = config.get("depth_template", config.get("depth_col_template"))
     fluxerr_template = str(config.get("fluxerr_template", "fluxerr_{band}"))
     sigma = float(config.get("sigma", config.get("depth_sigma", 5.0)))
     if sigma <= 0:
@@ -335,7 +340,16 @@ def _pixel_depth_cut_mask(
             depth_cache[band] = _pixel_depth_values(
                 catalog,
                 pixel_col=pixel_col,
-                fluxerr_col=fluxerr_template.format(band=band),
+                depth_col=(
+                    None
+                    if depth_template is None
+                    else str(depth_template).format(band=band)
+                ),
+                fluxerr_col=(
+                    None
+                    if depth_template is not None
+                    else fluxerr_template.format(band=band)
+                ),
                 sigma=sigma,
                 rows_mask=mask_for_depths,
             )
@@ -407,10 +421,18 @@ def _pixel_depth_values(
     catalog: pd.DataFrame,
     *,
     pixel_col: str,
-    fluxerr_col: str,
+    depth_col: str | None,
+    fluxerr_col: str | None,
     sigma: float,
     rows_mask: np.ndarray,
 ) -> np.ndarray:
+    if depth_col is not None:
+        if depth_col not in catalog:
+            raise ValueError(f"Pixel depth cut requested missing column: {depth_col}")
+        return catalog[depth_col].to_numpy(float)
+
+    if fluxerr_col is None:
+        raise ValueError("Pixel depth cut needs depth_template or fluxerr_template")
     if fluxerr_col not in catalog:
         raise ValueError(f"Pixel depth cut requested missing column: {fluxerr_col}")
 
@@ -445,6 +467,20 @@ def _sample_footprint(
     if "pixel" not in columns:
         raise ValueError("Sample footprint output requires a 'pixel' column")
     return catalog[columns].copy().reset_index(drop=True)
+
+
+def _assign_sample_jackknife(catalog: pd.DataFrame, config: Any) -> pd.DataFrame:
+    if not isinstance(config, Mapping):
+        raise ValueError("Sample jackknife config must be a mapping")
+    regions_per_field = config.get("regions_per_field")
+    if regions_per_field is None:
+        return catalog
+    return assign_jackknife_regions(
+        catalog,
+        regions_per_field=int(regions_per_field),
+        field_col=str(config.get("field_col", "field")),
+        output_col=str(config.get("output_col", "jackknife_region")),
+    )
 
 
 def _cleaning_for_sample(
