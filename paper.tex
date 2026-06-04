@@ -1,0 +1,453 @@
+\documentclass[linenumbers, twocolumn]{aastex701}
+
+\usepackage{amsmath}
+\usepackage{microtype}
+
+\newcommand{\note}[1]{\textcolor{red}{#1}}
+\newcommand{\needscite}{\note{[citation needed]}}
+\newcommand{\comment}[1]{}
+\newcommand{\lcdm}{$\Lambda$CDM}
+
+
+\begin{document}
+
+\title{
+    A First Measurement of Circumgalactic Dust Reddening\\
+    from Only 1.7\,deg$^2$ of the Rubin Observatory's DP1
+}
+
+\author[0000-0002-2495-3514]{John Franklin Crenshaw}
+\affiliation{Kavli Institute of Particle Astrophysics and Cosmology}
+\affiliation{Department of Physics, Stanford University, Stanford, CA 94305-4085}
+\affiliation{SLAC National Accelerator Laboratory, 2575 Sand Hill Road, Menlo Park, California 94025}
+\email[show]{jfcren@stanford.edu}
+
+\author[0000-0001-7961-9735]{Matthew McQuinn}
+\affiliation{Department of Astronomy, University of Washington, Seattle, WA 98195}
+\email{mcquinn@uw.edu}
+
+\author[0000-0002-0355-0134]{Jessica K. Werk}
+\affiliation{Department of Astronomy, University of Washington, Seattle, WA 98195}
+\email{jwerk@uw.edu}
+
+\begin{abstract}
+
+We present the first measurement of circumgalactic dust reddening from the Vera C. Rubin Observatory, using only 1.7\,deg$^2$ of ComCam Data Preview 1 -- roughly $0.01\%$ of the final LSST footprint.
+Using photometric redshifts, we stack background-galaxy colors around foreground-galaxy positions and measure a projected galaxy--dust reddening profile, $E(g-i)=(4.7\pm1.9)\times10^{-3}\, (r_\perp/\mathrm{Mpc})^{-0.75\pm0.11}$, over $0.01<r_\perp/\mathrm{Mpc}<1$.
+The amplitude and radial dependence are consistent with earlier wide-area measurements, with a similar signal-to-noise ratio despite the $\sim1000\times$ smaller survey area.
+This agreement is notable because our foreground sample reaches 3--6 magnitudes fainter than previous studies and probes stellar and halo masses lower by factors of $\sim10$, indicating that substantial circumgalactic dust is associated with lower-mass galaxies and their environments.
+Splitting the foreground sample by rest-frame $g-r$ color, we find that our red galaxy sample (rest-frame $g-r > 0.5$), with halo masses of $10^{11}$--$10^{12}\,M_\odot$, exhibits substantially stronger dust reddening within 50\,kpc than has previously been measured around more massive LRG populations.
+We discuss prospects for a comprehensive LSST analysis of CGM enrichment and the implications of circumgalactic dust for precision cosmology.
+
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+The circumgalactic medium (CGM) encompasses the diffuse gas, metals, and dust surrounding galaxies, extending through their dark matter halos and connecting the interstellar medium (ISM) to the intergalactic medium (IGM).
+As the interface between galaxies and the cosmic web, the CGM regulates galaxy evolution by mediating gas accretion, recycling stellar material, hosting metal-enriched outflows driven by stellar and AGN feedback, and providing a reservoir for future star formation \citep{tumlinson2017}.
+Absorption-line studies with background quasars and galaxies show that the CGM is multiphase, with cool photoionized gas, warm metal-bearing gas, and hot virialized plasma all contributing to the halo baryon budget \citep{maller2004,tumlinson2011,werk2014,faerman2017}.
+
+Dust is an informative but underused tracer of this baryon cycle.
+Interstellar grains are produced by evolved stars and supernovae, grow by accreting gas-phase metals in dense interstellar gas, can be ejected into halos by radiation pressure and feedback, and are destroyed by shocks and thermal sputtering in hot plasma \citep{draine2003,dwek1998,galliano2018,draine1979,draine1979destruction,dwek1992}.
+Dust abundance therefore probes outflows, CGM conditions, and solid-phase metals, complementing absorption-line measurements of the gas phase \citep{otsuki2024}.
+
+Several observations indicate that the CGM contains appreciable dust.
+Quasar absorption systems, especially Mg~{\sc ii} absorbers, redden background quasars and exhibit dust-to-gas ratios comparable to those of galaxies \citep{york2006,menard2008,menard2012}.
+Nearby edge-on galaxies show extraplanar dust clouds and far-infrared halo emission on kpc scales, demonstrating that feedback, winds, and tidal interactions can lift dust out of disks \citep{howk1999,yoon2021}.
+On larger scales, statistical reddening measurements probe the projected galaxy--dust correlation by averaging over many foreground--background pairs.
+
+\citet{menard2010} measured the reddening of $\sim85,000$ background quasars around foreground galaxies in $\sim 3800\,\text{deg}^2$ of the Sloan Digital Sky Survey (SDSS), detecting a color excess from $\sim20$\,kpc to several Mpc.
+\citet{peek2015} performed a similar analysis using SDSS ``standard crayons,'' a galaxy sample selected for uniform colors.
+Both studies found profiles consistent with $\langle E(B-V) \rangle \propto r^{-0.8}$, with \citet{peek2015} finding evidence for enhanced reddening on inner CGM scales.
+Together, these studies imply dust masses of $\sim 10^7 - 10^8$ M$_\odot$ around low-redshift $L_*$ galaxies, suggesting that roughly half of their dust lies in the CGM.
+The amplitude and wavelength dependence further imply that dust, including small grains vulnerable to sputtering, survives transport through winds and into circumgalactic plasma.
+
+The large-scale distribution of dust is also relevant for precision cosmology.
+Stellar and AGN feedback redistribute baryons on non-linear scales \citep{chisari2019}, and dust traces enriched baryons in ways that are sensitive to feedback physics.
+Intergalactic dust also dims and reddens background sources, coupling to magnification measurements, photometric-redshift inference, galaxy clustering, and Type~Ia supernova distances \citep{aguirre1999,mortsell2003,menard2010,menard2010sn,goobar2018}.
+Indeed, uncertainties in extragalactic dust extinction are quoted as the second largest source of systematic error in recent Type~Ia supernova analyses \citep{rubin2025}.
+Empirical galaxy--dust correlations therefore constrain feedback-driven enrichment and calibrate dust-related systematics in imaging surveys.
+
+The SDSS results have since been extended by more modern surveys.
+\citet{mccleary2025} used Luminous Red Galaxies (LRGs) observed by the 5000\,deg$^2$ Dark Energy Survey (DES) as background tracers, and \citet{genc2025} used the bright sample of the 1000\,deg$^2$ Kilo-Degree Survey (KiDS).
+These results provide useful comparisons with different foreground selections, background samples, and estimators.
+These studies have required large survey areas because the dust signal is subtle: the typical color excess is only $\sim 10^{-3}$\,mag at Mpc scales, far below the intrinsic color scatter of galaxies.
+
+The Vera C. Rubin Observatory's Legacy Survey of Space and Time \citep[LSST;][]{ivezic2019} promises to transform this landscape.
+LSST will image $\sim18,000$ deg$^2$ in six bands ($ugrizy$) to unprecedented depth over ten years, detecting $\sim20$ billion galaxies with high-quality photometry.
+This combination of area, depth, and multi-band coverage will greatly expand the statistical power and scope of circumgalactic dust studies.
+
+Here we present the first constraints on circumgalactic dust from the Rubin Observatory.
+\textit{Using only 1.7\,deg$^2$} from Data Preview 1 (DP1; \citealt{dp1}), a commissioning pathfinder obtained with Rubin's Commissioning Camera (ComCam), we show Rubin-quality photometry already yields statistical precision comparable to previous wide-area surveys while probing fainter foreground galaxies and lower stellar masses.
+This result previews LSST's ability to characterize dust across cosmic time and as a function of galaxy mass, morphology, star-formation rate, and environment.
+
+We describe the data and foreground sample in Section~\ref{sec:data}, the stacking method in Section~\ref{sec:methods}, and results in Section~\ref{sec:results}.
+Section~\ref{sec:discussion} interprets the measurement and compares to previous work.
+Section~\ref{sec:conclusion} concludes.
+We assume Planck~2018 \lcdm{} cosmology throughout.
+
+
+
+\section{Data}
+\label{sec:data}
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics{fig_photoz_distribution.pdf}
+    \caption{
+        Foreground (background) galaxies are green (purple).
+        Left: \texttt{LePhare} vs \texttt{FlexZBoost} photo-$z$ estimates.
+        We remove galaxies for which the two estimates differ by more than $0.1 (1 + z_\text{phot})$ and for the remainder assign the inverse variance-weighted mean of the two methods for our photo-$z$ estimate.
+        Middle: photo-$z$ vs spec-$z$ for galaxies with spectroscopy.
+        Right: photo-$z$ and spec-$z$ histograms.
+        These distributions demonstrate the robustness of our photo-$z$ selection and estimates, as well as the low cross-contamination between the two samples.
+    }
+    \label{fig:photoz}
+\end{figure*}
+
+\subsection{Rubin DP1}
+\label{sec:DP1}
+
+Rubin's ComCam \citep{2022SPIE12184E..0JS,2020SPIE11447E..0LS,2018SPIE10700E..3DH, comcam2024} is a 144-megapixel pathfinder instrument covering roughly 5\% of the LSSTCam focal plane, providing an $\approx0.5$\,deg$^2$ field of view.
+Its focal plane comprises nine high-performing spare LSSTCam CCDs, while the telescope, readout systems, and data pipelines are the same as those used for LSSTCam, enabling end-to-end testing of the observatory.
+
+ComCam observed on sky from October 24 to December 11, 2024, producing the DP1 dataset described by \citet{dp1}.
+We use RA, Dec, and $ugrizy$ AB magnitudes from the coadded object catalog\footnote{Schema: \url{https://sdm-schemas.lsst.io/dp1.html}}.
+In all cases we use \texttt{cModel} fluxes when referring to flux in individual bands and \texttt{gaap1p0} fluxes when computing colors.
+
+To assemble an approximately magnitude-limited galaxy sample, we require \texttt{refExtendedness == 1}, \texttt{blendedness < 0.42}, and $r < 24$.
+We pixelize the footprint with healpix \texttt{NSIDE=1024}, estimate each pixel's 10$\sigma$ depth in each band from the median \texttt{cModel} magnitude error, remove pixels with $r$-band 10$\sigma$ depth shallower than 24, and then remove the shallowest remaining 5\% of pixels in each band.
+The final area is $\sim 1.7$\,deg$^2$ across three DP1 fields (ECDFS, EDFS, Rubin~SV~95~-25).
+
+
+\subsection{Known issues with DP1}
+\label{sec:dp1-issues}
+
+While the DP1 dataset provides a uniquely faithful preview of LSST, several commissioning-era issues degrade degrade its quality relative to the data expected from LSST \citep{dp1}.
+These include high ComCam read noise, elevated charge transfer inefficiency, elevated operating temperature and associated $g$-band red leak, evolving active optics and thermal control, and uncontrolled dome turbulence.
+DP1 is therefore a conservative preview of LSST performance.
+
+The photometric errors in the DP1 $u$ and $y$ bands are also significantly underestimated, and their depths overestimated \citep{SITCOMTN-154}.
+To avoid these calibration complications, we remove sources with a photo-$z$ of less than $ 0.2$ (Section~\ref{sec:photoz}) and compute galaxy colors only from $griz$.
+
+\subsection{Photo-z Selection}
+\label{sec:photoz}
+
+We select foreground and background galaxies using DP1 photo-$z$ estimates from the RAIL team \citep{zhang2025b,rail}.
+For both the \texttt{LePhare} \citep{lephare1,lephare2} template photo-$z$ and the \texttt{FlexZBoost} \citep{flexzboost} machine-learning photo-$z$, we define $\sigma_\text{pz} = 0.5 (z_{84} - z_{16})$, where $z_{84}$ and $z_{16}$ are the 84th and 16th percentiles of the photo-$z$ posterior.  In order for the galaxy to be included in our sample, we require $\sigma_\text{pz} < 0.1$ for both estimates and $|z_\texttt{LePhare} - z_\texttt{FlexZBoost}| < 0.1 (1 + z_\text{phot})$.
+For each galaxy's redshift, we use the inverse variance-weighted mean, $z_\text{phot}$, of the two photo-$z$ estimates.
+
+We then select foreground galaxies with $0.2 < z_\text{phot} < 0.5$ and background galaxies with $0.7 < z_\text{phot} < 1.4$.
+The intervening $\Delta z=0.2$ gap limits overlap and contamination, while the $z_\text{phot}>0.2$ and $z_\text{phot}<1.4$ cuts avoid regimes most affected by the DP1 $u$- and $y$-band issues by removing regimes where these bands are vital for localizing the Balmer break.
+The low-redshift cut also prevents projected separations ($r_\perp$; see Section~\ref{sec:methods}) from diverging.
+The resulting samples contain 9995 foreground galaxies and 10253 background galaxies.
+
+We evaluate the resulting quality of our photo-$z$'s in Figure~\ref{fig:photoz} by comparing them to the spectroscopic redshifts in the DP1 redshift training catalog.
+This comparison demonstrates that our foreground and background samples have relatively accurate photo-$z$'s, with minimal overlap and contamination between the two samples.
+Indeed, the contamination rate for our spectroscopically cross-matched galaxies is only 0.01\%, using $z=0.6$ as the classification boundary.
+We also perform analysis variants changing the redshift gap between the foreground and background selection cuts by $\pm 0.1$ and confirm that the results are consistent with our fiducial analysis within the uncertainties.
+
+
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics{fig_foreground_cmd.pdf}
+    \includegraphics{fig_foreground_properties.pdf}
+    \caption{
+        Upper: rest-frame color-magnitude diagram for the foreground sample.
+        We use a cut of $g - r = 0.5$ to split the foreground sample into red and blue subsamples.
+        Left: observed-frame apparent $r$-band magnitudes.
+        Dashed lines and arrows mark magnitude limits from previous studies.
+        Middle: estimated stellar masses.
+        The red sample is more massive than the blue sample; dashed lines and arrows mark lower mass limits from previous studies.
+        Right: estimated halo masses.
+        Dashed lines represent the characteristic halo masses for the \citet{mccleary2025} blue WISExSuperCOSMOS \citep{raghunathan2018} and red DES redMaGiC LRG \citep{zacharegkas2022} samples.
+    }
+    \label{fig:foreground}
+\end{figure*}
+
+\subsection{Characterizing the foreground sample}
+
+Because the stack measures dust around the selected foreground population, the stacked sample's luminosities, colors, and masses are central to the interpretation.
+We estimate rest-frame magnitudes, colors, and stellar masses with \texttt{kcorrect} \citep{blanton2007}, using the expanded template set of \citet{pai2024}, including a 10\% error floor in the problematic $u$ and $y$ bands (Section~\ref{sec:dp1-issues}).
+Model residuals are $\lesssim 1\%$ in $griz$.
+We estimate halo masses by inverting the redshift-dependent stellar-to-halo-mass relation of \citet{moster2013}.
+These masses are intended as approximate population descriptors rather than precise masses for individual galaxies.
+
+While the statistical precision of the DP1 data set is not sufficient to split across a wide range of properties, we do consider a split be galaxy color. Figure~\ref{fig:foreground} shows a bimodal rest-frame $g - r$ distribution.  This motivates splitting into red and blue subsamples at $g - r = 0.5$.
+The blue subsample reaches fainter apparent magnitudes and lower stellar masses, while the red subsample is brighter and more massive in stellar and inferred halo mass.
+Relative to previous galaxy--dust measurements, the DP1 foreground selection is substantially deeper: it reaches $r<24$ and extends the stellar-mass range down to $\sim10^8 \, M_\odot$.
+Because color also correlates with stellar mass, luminosity, dust attenuation, inclination, and environment, the split is not a pure star-forming/quiescent division, but this split provides a glimpse into how galaxy--dust correlation changes across foreground populations.
+
+
+\section{Methods}
+\label{sec:methods}
+
+We measure the average color excess from circumgalactic dust by stacking flux ratios of background galaxies around the positions of foreground galaxies, and expressing the stacked ratios in magnitude-color units.
+
+For each foreground--background pair $(f, b)$, we compute the proper transverse separation $r_\perp = D_A(z_f^\text{phot})\,\theta_{fb}$, where $D_A$ is the angular diameter distance to the foreground photo-$z$ and $\theta_{fb}$ is the pair separation on the sky.
+We bin pairs into five logarithmically spaced bins from $0.01$ to $1$\,Mpc.
+For a band pair $x-y$, we compute the background-galaxy flux ratio
+\begin{align}
+    \rho_b^{xy} = f_{x,b} / f_{y,b},
+\end{align}
+using the fluxes corresponding to the \texttt{gaap1p0} photometry.
+In each bin $i$, we form a weighted mean of these ratios,
+\begin{align}
+    \bar{\rho}^{\,xy}_i &=
+        \frac{\sum_{(f,b) \in i}\, w^{xy}_{b,i}\,\rho_b^{xy}}{\sum_{(f,b) \in i}\, w^{xy}_{b,i}},
+\end{align}
+where the inverse-variance weights include a floor set by the intrinsic variance within the radial bin:
+\begin{align}
+    w^{xy}_{b,i} &=
+        \frac{1}{\sigma^2_{\rho_b} + (s^{xy}_{\rho,i})^2}.
+\end{align}
+$\sigma_{\rho_b}$ is the propagated photometric uncertainty on the flux ratio and $(s^{xy}_{\rho,i})^2$ is the empirical variance of $\rho^{xy}_b$ in the radial bin.
+This floor captures intrinsic background-galaxy color scatter, which dominates the propagated photometric uncertainty for most pairs.
+We then convert the stacked ratio to a magnitude color,
+\begin{align}
+    \bar{c}^{\,xy}_i = -2.5 \log_{10} \bar{\rho}^{\,xy}_i .
+\end{align}
+We use $g-i$ as our primary dust tracer, but also compute stacked ratios for $g-r,\, r-i,\, i-z$ to probe the chromaticity of the inferred reddening.
+
+To suppress residual systematics from large-scale variations in photometric calibration, image depth and quality, and Galactic extinction, we compute a ``flipped'' stack $\bar{c}^\text{\,flip}_i$ by applying the same estimator to \emph{foreground} galaxy colors around the positions of background galaxies, while still using the foreground photo-$z$ to compute $r_\perp$.
+The flipped stack has no physical circumgalactic-reddening signal but inherits the same selection and systematic structure, so we adopt
+\begin{align}
+    \Delta \bar c_i \equiv \bar{c}_i - \bar{c}^\text{\,flip}_i
+\end{align}
+as our systematics-corrected estimator \citep[cf.][]{menard2010, peek2015}.
+
+We obtain the final estimator, $E_i(c) = \Delta \bar c_i - \Delta \bar c_\text{ref}$, by subtracting the average value in a reference annulus at $2 < r_\perp\,/\,\text{Mpc} < 4$.
+This removes the intrinsic mean galaxy color, any constant offset between the regular and flipped stacks, and suppresses spurious correlations due to survey non-uniformity.
+This latter effect is especially important for removing edge effects where the depth rolls off at the edge of the fields.
+We verify that shifting the reference annulus by $\pm 1$\,Mpc changes the inferred profile by less than $\pm1\sigma$ in all bins.
+%For our headline color we identify $E(g-i)$ with the standard reddening $E(B-V)$, following \citet{menard2010} and \citet{genc2025}.
+
+This estimator measures the color of the mean flux ratio rather than the mean individual magnitude color, but the distinction is negligible for our differential reddening measurement.
+Dust multiplies flux ratios by an attenuation factor that the logarithm converts into additive color excess, while the flipped-stack and reference-annulus subtractions cancel constant baselines.
+Flux-ratio space also avoids extreme colors from individual low-S/N ratios that scatter near zero.
+
+We estimate the covariance of $E_i(c)$ with a jackknife over nine spatial regions, splitting each of the three DP1 fields (Section~\ref{sec:DP1}) into three contiguous, roughly equal-area subregions.
+This small number is forced by the DP1 footprint relative to the largest scale in our estimator ($\sim 4$\,Mpc). %; finer partitioning would produce regions smaller than our reference annulus and yield correlated jackknife samples.
+The measurement noise floor is therefore set by jackknife covariance precision rather than per-pair photometric scatter, which is orders of magnitude smaller.
+Future LSST releases should improve the signal-to-noise by roughly two orders of magnitude by providing $10^4 \times$ more area.
+
+The dominant uncertainty in $r_\perp$ is the foreground photo-$z$.
+For our foreground sample (Section~\ref{sec:photoz}), the typical scatter $\sigma_z \lesssim 0.1$ corresponds to $\lesssim 15\%$ uncertainty in $r_\perp$, which is small compared to our wide logarithmic bins.
+
+
+
+\section{Results}
+\label{sec:results}
+
+\begin{figure*}[t]
+    \centering
+    \includegraphics{fig_result_compare.pdf}
+    \includegraphics{fig_result_jackknife.pdf}\\
+    \includegraphics{fig_result_colors.pdf}
+    \includegraphics{fig_result_red_vs_blue.pdf}
+    \caption{
+        Top left: average $E(g-i)$ reddening from Rubin DP1 compared to previous measurements from SDSS \citep{menard2010} and KiDS \citep{genc2025}.
+        The red line is our power-law fit, while the black line is the fit of \citet{menard2010}.
+        Top right: $E(g-i)$ measurements from each of the nine jackknife samples.
+        Bottom left: all measured color excesses.
+        Colors involving shorter observed wavelengths show the largest excesses.
+        Bottom right: $E(g-i)$ for the red and blue foreground samples (cf. Fig.~\ref{fig:foreground}).
+        Error bars show $\pm1\sigma$; in the bottom panels, points are offset slightly in $r_\perp$ for visibility.
+        The upper limit in the lower-right panel is a 3$\sigma$ upper limit.
+    }
+    \label{fig:result}
+\end{figure*}
+
+Fig.~\ref{fig:result} shows the stacking results.
+The fiducial $E(g-i)$ profile shown in the top-left panel is positive in all five radial bins from $r_\perp\simeq0.01$ to $1$\,Mpc and declines smoothly with projected separation, spanning $\sim 0.1$\,mag on the smallest scales to $\sim 0.01$\,mag near $1$\,Mpc.
+
+The different curves in the top-right panel are the profiles from each of the nine subregions used for the jackknife errorbars.
+The measurement in each of these subregions follow a similar radial trend, at least in the inner $0.1$Mpc, indicating that no single DP1 subregion drives the measurement.
+Scatter increases at larger separations approaching the size of the jackknife regions, but still most of the subregions have a comparable signal with no region significantly above the others.
+
+The upper-left panel compares the jackknife mean $E(g-i)$ profile to the SDSS measurement of \citet{menard2010} and the KiDS measurement of \citet{genc2025}.
+Despite the fact that the DP1 area of 1.7\,deg$^2$ is $1000\times$ smaller than the areas of SDSS and KiDS, the Rubin amplitude and slope are consistent with these wide-field measurements over the overlapping radial range, and the signal-to-noise ratios are comparable.
+A power-law fit to the DP1 profile gives
+\begin{align}
+    E(g-i) = (4.7 \pm 1.9) \times 10^{-3} \, \left( \frac{r_\perp}{\mathrm{Mpc}} \right)^{-0.75 \pm 0.11},
+\end{align}
+indicating a robust detection of a declining projected galaxy--dust correlation with a slope close to the $\sim r_\perp^{-0.8}$ behavior found previously.
+
+The lower-left panel additionally shows the $g-r$, $r-i$, and $i-z$ signals.
+The chromatic ordering is qualitatively consistent with dust extinction: colors involving the bluer $g$ band are more affected by dust, while substituting this band with a redder one results in smaller excesses.
+As the scaling of dust is much stronger to the blue, the dependence on the subtracted (redder) band is secondary.
+
+The lower-right panel splits the foreground sample at rest-frame $g-r=0.5$.
+The red and blue samples have comparable inner-bin reddening, while red foreground galaxies show a stronger signal at larger projected separations.
+Because the split also segregates by stellar mass, halo mass, and -- for larger $r_\perp$ -- environment (Fig.~\ref{fig:foreground}), this is not a clean star-forming/quiescent comparison.
+
+
+\section{Discussion}
+\label{sec:discussion}
+
+\begin{table}[t]
+    \centering
+    \caption{
+        Comparison of foreground galaxy samples used to measure dust reddening.
+        $A$ is survey area (deg$^2$);
+        $n_\mathrm{fg}$ and $n_\mathrm{bg}$ are foreground and background number densities (deg$^{-2}$);
+        $r_\mathrm{lim}$ is the foreground $r$-band magnitude limit, except for \citet{menard2010}, where it is the $i$-band limit;
+        $\langle z \rangle_\mathrm{fg}$ is the foreground median redshift;
+        $\log_{10}(M_\star^\mathrm{min})$ is the approximate minimum stellar mass.
+        DP1 corresponds to this analysis;
+        other columns are \citet{menard2010}, \citet{peek2015}, \citet{genc2025}, \citet{mccleary2025}.
+        $\langle \mathrm{rel.~SNR}\rangle$ is defined in Eq.~\ref{eq:relative-snr}, normalized to DP1;
+        rel. SNR gives approximate realized relative significances where available.
+        \label{tab:sample-comparison}
+    }
+    \begin{tabular}{rccccc}
+        \hline\hline
+                                              &  DP1 &       Menard &  Peek & Genc & McCleary \\
+        \hline
+        $\log_{10}A$                          &  0.23 &         3.6 &   4.2 &  3.0 & 3.6 \\
+        $\log_{10} n_\mathrm{fg}$             &  3.8 &          3.8 &   1.6 &  3.0 & 2.5 \\
+        $\log_{10} n_\mathrm{bg}$             &  3.8 &          1.3 &   1.0 &  4.3 & 2.3 \\
+        $\langle \mathrm{rel.~SNR} \rangle$   &  1.0 &          3.2 &  0.32 &   20 & 2.0 \\
+        rel. SNR$~$                           &  1.0 &          1.5 &   1.2 &      & 19 \\
+        $r_\mathrm{lim}$                      &   24 &   21$^{\!*}$ & 17.77 &   20 & 21 \\
+        $\langle z \rangle_\mathrm{fg}$       & 0.36 &         0.36 &  0.10 & 0.30 & 0.14 \\
+        $\log_{10}(M_\star^\mathrm{min})$     &    8 &         10.2 &   9.1 & 10.2 & 9 \\
+        \hline
+    \end{tabular}
+\end{table}
+
+\subsection{Comparison to previous measurements}
+
+Our measurement agrees broadly with the SDSS profile of \citet{menard2010} and the KiDS measurement of \citet{genc2025}, despite DP1's much smaller area.
+This comparison separates two limits in color stacking: the number of foreground--background pairs and the number of independent sky regions available for estimating residual systematics and large-scale covariance.
+If color scatter and geometry are comparable, the pair-count contribution scales as $\mathrm{SNR} \propto \sqrt{A \, n_\mathrm{fg} \, n_\mathrm{bg}}$, where $A$ is survey area and $n_\mathrm{fg}$ and $n_\mathrm{bg}$ are the foreground and background number densities.
+We therefore define
+\begin{align}
+    \langle \mathrm{rel.~SNR} \rangle = \sqrt{
+        \frac{A}{A_\mathrm{DP1}}
+        \frac{n_\mathrm{fg}}{n_\mathrm{fg,DP1}}
+        \frac{n_\mathrm{bg}}{n_\mathrm{bg,DP1}}
+    }
+    \label{eq:relative-snr}
+\end{align}
+as a simple pair-count proxy for SNR relative to DP1.
+Table~\ref{tab:sample-comparison} shows that DP1 partly compensates for its small footprint with high source densities, especially in the background sample.
+The proxy is intentionally simple: it ignores intrinsic background color variance, color standardization, source-selection differences, and large-scale covariance estimated by jackknife resampling.
+These effects likely explain why realized SNRs do not follow the metric exactly.
+For example, \citet{peek2015} and \citet{mccleary2025} benefit from standardized background samples, while our DP1 uncertainties are dominated by the small number of independent jackknife regions rather than per-pair photometric errors.
+The main lesson is that Rubin-quality photometry and source density already provide enough pair statistics for a competitive measurement; full LSST will add the contiguous area needed to control covariance, systematics, and sample splits.
+
+\subsection{Physical interpretation of the dust profile}
+
+The measured profile is a projected galaxy--dust correlation, not a direct image of dust bound to individual galaxies.
+Well inside the virial radius, the signal is naturally associated with a galaxy's own halo; near and beyond the virial radius, it also includes two-halo contributions from correlated galaxies, groups, filaments, and diffuse IGM dust.
+Because our radial range spans $0.01<r_\perp/\mathrm{Mpc}<1$, both regimes contribute to the fitted power law.
+
+The astrophysical implication reinforces that of earlier work but on our smaller stellar/halo mass sample: nonzero circumgalactic reddening requires solid-state metals to be transported out of the dense ISM and to either survive in circumgalactic environments or be continuously replenished.
+Dust grains can be injected into galactic winds with cool gas, and simulations show that dusty, dense phases are preferentially entrained relative to hot volume-filling gas \citep{kannan2021,chenOh2024}.
+Yet grains in $T\gtrsim10^6$\,K plasma are eroded by thermal sputtering on density-dependent timescales that are shorter for small grains \citep{draine1979,tsai1995,dwek1992}.
+Measurable reddening therefore favors dust that is shielded in cool or warm clouds, located in lower-density gas, replenished by outflows and stripping, or associated with correlated structures rather than a homogeneous hot halo.
+Cosmological dust simulations reproduce the approximate amplitude and radial scaling of observed galaxy--dust correlations, but still struggle to match the evolution with redshift and stellar mass, as well as the inferred grain-size distribution \citep{mckinnon2017,aoyama2018}.
+
+We do not quote a halo dust mass for DP1.
+Converting $E(g-i)$ into mass requires assumptions about grain opacity, the extinction curve, and the one-halo/two-halo decomposition.
+With Milky-Way-like opacities, previous analyses infer characteristic CGM dust masses of $10^7$--$10^8\,M_\odot$ for $L_*$ galaxies \citep{menard2010,peek2015,genc2025}.
+DP1's lower-mass foreground galaxies and small area make such a conversion premature, but the slope and amplitude agree with earlier measurements, suggesting that DP1 traces the same large-scale dust enrichment as these earlier surveys.
+
+
+\subsection{Implications of consistency across sample depth}
+
+The agreement with earlier profiles is notable because DP1 reaches much fainter foreground magnitudes and lower inferred stellar masses than previous wide-field galaxy--dust measurements.
+Our selection extends to $r<24$ and stellar masses of order $10^8\,M_\odot$, while previous foreground samples were dominated by brighter galaxies with minimum stellar masses closer to $10^9$--$10^{10}\,M_\odot$ (Table~\ref{tab:sample-comparison}; Fig.~\ref{fig:foreground}).
+This added low-mass population does not clearly dilute the reddening amplitude, as would be expected if halo dust mass declined steeply with stellar mass.
+Indeed lower-mass galaxies may contribute more efficiently to circumgalactic dust per unit stellar mass due to their shallower potentials and bursty feedback that eject a larger fraction of their metals and dust into the CGM.
+
+\note{Collecting some citations and pieces of info to add:}
+\begin{itemize}
+    \item Peek finds $M_\text{dust} \propto M_*^{0.23}$. Should check whether our findings are consistent.
+    \item \citet{zheng2024} finds that the majority of surviving metals in dwarf galaxies is in their CGM
+    \item \citet{chisholm2018} finds that metal loading in outflows has an inverse relationship with mass
+    \item \citet{chisholm2017} finds the same with mass loading
+    \item \citet{bordoloi2014} COS-Dwarfs survey. Similar mass range. Finds CIV enrichment of CGM.
+\end{itemize}
+
+\subsection{Dust around red vs blue galaxies}
+
+The lower right panel of Fig.~\ref{fig:result} suggests that red foreground galaxies have greater large-scale dust extinction than blue foreground galaxies.
+This should be interpreted cautiously because color also tracks stellar mass, halo mass, luminosity, virial radius, and environment (Fig.~\ref{fig:foreground}).
+Red galaxies also cluster more strongly, so their stacks include larger contributions from correlated halos and dust-enriched environments.
+
+At small radii, the red and blue measurements are more similar.
+For blue galaxies, this is consistent with ongoing star formation and feedback replenishing inner-halo dust.
+For red galaxies, quenching reduces current dust injection, while larger halo masses and hotter virial temperatures increase sputtering.
+Indeed \citet{mccleary2025} find little dust extinction around redMaGiC LRGs within the inner $\sim50\,h^{-1}$\,kpc but significant large-scale signal, consistent with inner-halo destruction plus environmental correlation.
+
+Our red sample, however, is much less massive: its median mass is $6 \times 10^{11}\,M_\odot$, roughly two orders of magnitude smaller than the $5 \times 10^{13}\,M_\odot$ characteristic mass of redMaGiC LRGs \citep{zacharegkas2022}.
+Because $T_\text{vir} \propto M_\text{vir}^{2/3}$, our red sample has a virial temperature $\sim 20\times$ lower, around $5 \times 10^5$\,K, compared with $\sim 10^7$\,K for redMaGiC LRGs \citep{barkana2001}.
+This lies just below the $\sim10^6$\,K threshold where sputtering typically becomes efficient in the CGM \citep{richie2024}, so dust may survive for long durations in many of our red-sample halos.
+Our red sample may also include a significant number of dusty star-forming galaxies that actively replenish CGM dust.
+
+
+\subsection{Prospects with LSST}
+\label{sec:lsst}
+
+DP1 is a pathfinder for LSST, which will provide $10^4 \times$ more sky area and dramatically reduce the jackknife noise floor that limits this analysis.
+The full survey will enable halo-model fits, redshift evolution measurements, and detailed sample splits by stellar mass, star-formation rate, morphology, and environment.
+Deep multi-band photometry will constrain extinction-curve shape and dust grain-size distributions, tightening constraints on CGM conditions.
+
+The most diagnostic advances will come from correlating dust with complementary tracers.
+Thermal and kinetic Sunyaev--Zel'dovich effects (tSZ, kSZ) constrain line-of-sight electron pressure and velocity-weighted ionized gas optical depth \citep{amodeo2021,riedguachalla2025,riedguachalla2025b}, while galaxy--galaxy or CMB lensing fixes projected total mass.
+At fixed lensing mass, strong extinction with weak tSZ would favor dust in cool or warm phases, whereas strong tSZ with little extinction would point to hot gas or efficient grain destruction.
+Joint measurements can therefore separate solid-phase metals, hot gas pressure, ionized gas column, and total mass, enabling a multi-phase baryon census for feedback models and cosmological analyses \citep{singh2016,pandey2022}.
+
+
+
+\section{Conclusion}
+\label{sec:conclusion}
+
+We have presented the first circumgalactic dust-reddening measurement from the Rubin Observatory.
+Using only $\sim1.7$\,deg$^2$ of commissioning data, we detect a declining projected color-excess profile across five radial bins from $r_\perp\simeq0.01$ to $1$\,Mpc, with
+\begin{align}
+    E(g-i) = (5.3 \pm 2.0) \times 10^{-3} \, \left( \frac{r_\perp}{\mathrm{Mpc}} \right)^{-0.72 \pm 0.11}.
+\end{align}
+Despite covering orders of magnitude less sky than earlier SDSS, KiDS, and DES studies \citep{menard2010,peek2015,genc2025,mccleary2025}, Rubin's depth and high source densities deliver comparable statistical precision.
+
+Our foreground selection reaches $r < 24$ and stellar masses as low as $\sim10^8\,M_\odot$, yet the amplitude and slope of our signal agree with earlier studies probing brighter, more massive galaxies.
+This suggests that low-mass galaxies contribute efficiently to circumgalactic dust per unit stellar mass, that much of the signal originates in dust-enriched large-scale environments, or both.
+
+As in \citet{mccleary2025}, we find that red galaxies show greater large-scale extinction, consistent with their higher mass, bias, and enriched environments.
+Unlike \citet{mccleary2025}, however, our red and blue samples have similar extinction below 100\,kpc, perhaps because our red galaxies have lower virial temperatures, host dust shielded in cool or warm clouds, or include dusty star-forming systems.
+
+Our DP1 analysis provides a compelling pathfinder for LSST.
+The full survey will extend this first detection to precise measurements as a function of galaxy mass, star-formation activity, environment, and redshift, while enabling joint analyses with weak lensing, tSZ/kSZ, and absorption-line probes.
+Together these advances will connect solid-phase metals to the broader baryon cycle and calibrate extragalactic dust-related systematics for next-generation cosmology surveys.
+
+\begin{acknowledgments}
+
+    We are grateful to Sergio Martin-Alvarez, Susan Clark, Rebecca Chen, and Erik Peterson for useful discussions.
+
+    This project began during a sprint week hosted by the DiRAC Institute in the Department of Astronomy at the University of Washington.
+    The DiRAC Institute is supported through generous gifts from the Charles and Lisa Simonyi Fund for Arts and Sciences, Janet and Lloyd Frink, and the Washington Research Foundation.
+
+    JFC acknowledges support from the U.S. Department of Energy, Office of Science, Office of High Energy Physics Cosmic Frontier research program under award number DE-SC0022083.
+
+    JKW gratefully acknowledges support from NSF-CAREER 2044303.
+
+\end{acknowledgments}
+
+\facilities{
+    Rubin:Simonyi (LSSTComCam),
+    Rubin:USDAC
+}
+
+
+
+
+
+\bibliographystyle{aasjournalv7}
+\bibliography{references}
+
+
+\end{document}
