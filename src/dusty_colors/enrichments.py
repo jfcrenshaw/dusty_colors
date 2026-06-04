@@ -79,7 +79,8 @@ def apply_kcorrect(
 
     max_redshift = config.get("max_redshift")
     min_redshift = float(config.get("min_redshift", 0.0))
-    good = np.isfinite(redshift) & (redshift >= min_redshift)
+    # kcorrect asks Astropy for distance moduli; z <= 0 has no finite value.
+    good = np.isfinite(redshift) & (redshift > 0.0) & (redshift >= min_redshift)
     if max_redshift is not None:
         good &= redshift <= float(max_redshift)
     good &= np.isfinite(maggies).all(axis=1)

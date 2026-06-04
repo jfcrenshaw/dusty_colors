@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import sys
 from tempfile import TemporaryDirectory
+import types
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -19,7 +22,11 @@ from dusty_colors.cleaning import (
     apply_minimal_cleaning,
     clean_sample,
 )
-from dusty_colors.enrichments import apply_enrichments, _resolve_response_names
+from dusty_colors.enrichments import (
+    _resolve_response_names,
+    apply_enrichments,
+    apply_kcorrect,
+)
 from dusty_colors.observables import (
     add_observable_columns,
     flux_ratio_observable,
@@ -532,6 +539,72 @@ class CatalogSampleSliceTest(unittest.TestCase):
         self.assertTrue(np.isfinite(enriched.loc[0, "halo_mass_log"]))
         self.assertTrue(np.isfinite(enriched.loc[0, "r200_mpc"]))
         self.assertTrue(np.isnan(enriched.loc[1, "halo_mass_log"]))
+
+    def test_kcorrect_enrichment_skips_nonpositive_redshifts(self) -> None:
+        class FakeKcorrect:
+            redshifts: list[np.ndarray] = []
+
+            def __init__(self, *, responses: list[str]) -> None:
+                self.responses = responses
+
+            def fit_coeffs(
+                self,
+                *,
+                redshift: np.ndarray,
+                maggies: np.ndarray,
+                ivar: np.ndarray,
+            ) -> np.ndarray:
+                self.redshifts.append(np.asarray(redshift, dtype=float).copy())
+                return np.ones((len(redshift), len(self.responses)))
+
+            def absmag(
+                self,
+                *,
+                redshift: np.ndarray,
+                maggies: np.ndarray,
+                ivar: np.ndarray,
+                coeffs: np.ndarray,
+            ) -> np.ndarray:
+                return np.full((len(redshift), len(self.responses)), -20.0)
+
+            def derived(
+                self,
+                *,
+                redshift: np.ndarray,
+                coeffs: np.ndarray,
+            ) -> dict[str, np.ndarray]:
+                return {"mremain": np.full(len(redshift), 1.0e10)}
+
+        package = types.ModuleType("kcorrect")
+        package.__path__ = []
+        module = types.ModuleType("kcorrect.kcorrect")
+        module.Kcorrect = FakeKcorrect
+        catalog = pd.DataFrame(
+            {
+                "z_phot": [0.0, 0.1, -0.1, np.nan],
+                "flux_u": [10.0, 10.0, 10.0, 10.0],
+                "fluxerr_u": [1.0, 1.0, 1.0, 1.0],
+            }
+        )
+
+        with patch.dict(
+            sys.modules,
+            {"kcorrect": package, "kcorrect.kcorrect": module},
+        ):
+            enriched = apply_kcorrect(
+                catalog,
+                {
+                    "responses": ["u"],
+                    "response_bands": ["u"],
+                    "absmag_bands": ["u"],
+                },
+            )
+
+        np.testing.assert_allclose(FakeKcorrect.redshifts[0], [0.1])
+        self.assertTrue(np.isnan(enriched.loc[0, "absmag_u"]))
+        self.assertEqual(enriched.loc[1, "absmag_u"], -20.0)
+        self.assertTrue(np.isnan(enriched.loc[2, "stellar_mass_log"]))
+        self.assertTrue(np.isnan(enriched.loc[3, "stellar_mass_log"]))
 
     def test_kcorrect_response_paths_are_normalized_to_stems(self) -> None:
         responses = _resolve_response_names(
