@@ -360,6 +360,74 @@ class CatalogSampleSliceTest(unittest.TestCase):
         self.assertEqual(list(samples["foreground"]["object_id"]), [1])
         self.assertEqual(list(samples["background"]["object_id"]), [5])
 
+    def test_selection_applies_legacy_depth_snr_cuts_and_writes_footprint(
+        self,
+    ) -> None:
+        def flux_from_mag(mag: float) -> float:
+            return 10 ** ((31.4 - mag) / 2.5)
+
+        depth25_err = 10 ** ((31.4 - 25.0) / 2.5) / 5.0
+        catalog = pd.DataFrame(
+            {
+                "object_id": [1, 2, 3, 4],
+                "ra": [1.0, 2.0, 3.0, 4.0],
+                "dec": [0.0, 0.0, 0.0, 0.0],
+                "field": ["A"] * 4,
+                "pixel": [10, 10, 10, 11],
+                "z_phot": [0.3, 0.35, 0.9, 1.0],
+                "z_phot_err": [0.03] * 4,
+                "is_galaxy": [True] * 4,
+                "mask_ok": [True] * 4,
+                "quality_ok": [True] * 4,
+                "flux_g": [10.0] * 4,
+                "fluxerr_g": [1.0] * 4,
+                "flux_r": [5.0] * 4,
+                "fluxerr_r": [1.0] * 4,
+                "cmodel_flux_g": [1000.0, 2.0, 1000.0, 1000.0],
+                "cmodel_fluxerr_g": [depth25_err] * 4,
+                "cmodel_flux_r": [flux_from_mag(23.0)] * 4,
+                "blendedness_i": [0.1] * 4,
+            }
+        )
+        config = {
+            "selection": {
+                "foreground_z": [0.2, 0.5],
+                "background_z": [0.7, 1.4],
+                "pixel_depth_cuts": {
+                    "pixel_col": "pixel",
+                    "fluxerr_template": "cmodel_fluxerr_{band}",
+                    "sigma": 5,
+                    "window": {"bands": ["g"], "min": 20.0, "max": 30.0},
+                    "min_occupancy": 2,
+                    "min_depth": {"g": 24.0},
+                },
+                "snr_min": {
+                    "flux_template": "cmodel_flux_{band}",
+                    "fluxerr_template": "cmodel_fluxerr_{band}",
+                    "bands": {"g": 5},
+                },
+                "blendedness_max": {"column": "blendedness_i", "value": 0.42},
+                "magnitude_limits": [
+                    {
+                        "band": "r",
+                        "min": 18.0,
+                        "max": 24.0,
+                        "flux_col": "cmodel_flux_r",
+                    }
+                ],
+            },
+            "footprint": {
+                "enabled": True,
+                "columns": ["object_id", "ra", "dec", "pixel"],
+            },
+        }
+
+        samples = select_samples(catalog, config, bands=["g", "r"], photometry="flux")
+
+        self.assertEqual(list(samples["foreground"]["object_id"]), [1])
+        self.assertEqual(list(samples["background"]["object_id"]), [3])
+        self.assertEqual(list(samples["footprint"]["object_id"]), [1, 3])
+
     def test_sample_outputs_write_foreground_and_background(self) -> None:
         with TemporaryDirectory() as tmp:
             samples = {
@@ -430,6 +498,50 @@ class CatalogSampleSliceTest(unittest.TestCase):
         cleaned = clean_sample(catalog, config)
 
         pd.testing.assert_frame_equal(cleaned, catalog)
+
+    def test_sample_specific_legacy_cleaning_can_target_background_only(self) -> None:
+        catalog = pd.DataFrame(
+            {
+                "object_id": [1, 2],
+                "ra": [1.0, 2.0],
+                "dec": [0.0, 0.0],
+                "field": ["A", "A"],
+                "z_phot": [0.3, 0.9],
+                "z_phot_err": [0.03, 0.03],
+                "is_galaxy": [True, True],
+                "mask_ok": [True, True],
+                "quality_ok": [True, True],
+                "flux_g": [10.0, 20.0],
+                "fluxerr_g": [1.0, 1.0],
+                "flux_r": [5.0, 10.0],
+                "fluxerr_r": [0.5, 0.5],
+            }
+        )
+        config = {
+            "selection": {
+                "foreground_z": [0.2, 0.5],
+                "background_z": [0.7, 1.4],
+            },
+            "cleaning": {
+                "foreground": {"enabled": False},
+                "background": {
+                    "enabled": True,
+                    "legacy_photometry": {
+                        "enabled": True,
+                        "colors": ["g-r"],
+                        "modes": ["mcolors"],
+                        "columns": ["mcolor_g_r"],
+                        "ztrends": False,
+                        "outliers": False,
+                    },
+                },
+            },
+        }
+
+        samples = select_samples(catalog, config, bands=["g", "r"], photometry="flux")
+
+        self.assertNotIn("mcolor_g_r", samples["foreground"])
+        self.assertIn("mcolor_g_r", samples["background"])
 
     @unittest.skipUnless(SKLEARN_AVAILABLE, "scikit-learn is not installed")
     def test_isolation_forest_cleaning_removes_outlier_deterministically(self) -> None:

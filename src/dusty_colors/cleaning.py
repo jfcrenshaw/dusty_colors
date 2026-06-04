@@ -8,6 +8,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from .observables import build_observable, observable_column_names
+
 
 def apply_minimal_cleaning(
     catalog: pd.DataFrame,
@@ -105,7 +107,58 @@ def clean_sample(catalog: pd.DataFrame, config: Mapping[str, Any]) -> pd.DataFra
             _cleaning_mapping(forest, "isolation_forest"),
         )
 
+    legacy = config.get("legacy_photometry")
+    if legacy:
+        cleaned = clean_legacy_photometry(
+            cleaned,
+            _cleaning_mapping(legacy, "legacy_photometry"),
+        )
+
     return cleaned
+
+
+def clean_legacy_photometry(
+    catalog: pd.DataFrame,
+    config: Mapping[str, Any],
+) -> pd.DataFrame:
+    """Apply the old photometry cleaner, mutating configured value columns.
+
+    This intentionally mirrors the pre-refactor behavior: redshift trends are
+    removed from value columns in place, and IsolationForest outliers are marked
+    by setting just that column to NaN rather than dropping whole rows.
+    """
+    if not bool(config.get("enabled", True)):
+        return catalog.copy()
+
+    out = _with_legacy_observable_columns(catalog, config)
+    redshift_col = str(
+        config.get("redshift_col", config.get("redshift_column", "z_phot"))
+    )
+    if redshift_col not in out:
+        raise ValueError(f"legacy_photometry requested missing column: {redshift_col}")
+
+    columns = _legacy_columns(out, config)
+    ztrends = bool(config.get("ztrends", config.get("redshift_trends", True)))
+    outliers = bool(config.get("outliers", True))
+
+    for col in columns:
+        if col not in out:
+            raise ValueError(f"legacy_photometry requested missing column: {col}")
+        if ztrends:
+            out[col] = _legacy_redshift_detrended(
+                out[col].to_numpy(float),
+                out[redshift_col].to_numpy(float),
+                flux_like=_legacy_flux_like(col),
+                bin_width=float(config.get("redshift_bin_width", 0.04)),
+            )
+        if outliers:
+            out[col] = _legacy_outlier_nan_masked(
+                out[col].to_numpy(float),
+                out[redshift_col].to_numpy(float),
+                config,
+            )
+
+    return out
 
 
 def remove_redshift_trends(
@@ -211,6 +264,166 @@ def apply_isolation_forest(
     keep = ~finite if not drop_nonfinite else np.zeros(len(out), dtype=bool)
     keep[finite] = labels == 1
     return out.loc[keep].reset_index(drop=True)
+
+
+def _with_legacy_observable_columns(
+    catalog: pd.DataFrame,
+    config: Mapping[str, Any],
+) -> pd.DataFrame:
+    out = catalog.copy()
+    colors = [str(color) for color in config.get("colors", [])]
+    modes = [str(mode) for mode in config.get("modes", ["mcolors"])]
+    snr_max = config.get("snr_max")
+    snr_max = None if snr_max is None else float(snr_max)
+
+    for mode in modes:
+        if mode not in {"fcolors", "mcolors"}:
+            raise ValueError(f"legacy_photometry unsupported observable mode: {mode}")
+        for color in colors:
+            value_col, err_col = observable_column_names(
+                color,
+                mode,  # type: ignore[arg-type]
+            )
+            if value_col in out and err_col in out:
+                continue
+            observable = build_observable(
+                out,
+                color,
+                mode,  # type: ignore[arg-type]
+                snr_max=snr_max,
+            )
+            out[value_col] = observable["value"].to_numpy()
+            out[err_col] = observable["error"].to_numpy()
+
+    return out
+
+
+def _legacy_columns(catalog: pd.DataFrame, config: Mapping[str, Any]) -> list[str]:
+    columns = [str(col) for col in config.get("columns", [])]
+    if columns:
+        return columns
+
+    skip_fragments = tuple(str(item) for item in config.get("skip_fragments", ["err"]))
+    candidates = []
+    for col in catalog.columns:
+        lower = col.lower()
+        if any(fragment.lower() in lower for fragment in skip_fragments):
+            continue
+        if (
+            lower.startswith("flux_")
+            or "_flux_" in lower
+            or lower.startswith("mag_")
+            or "_mag_" in lower
+            or lower.startswith("mcolor_")
+            or lower.startswith("fcolor_")
+        ):
+            candidates.append(str(col))
+    return candidates
+
+
+def _legacy_redshift_detrended(
+    values: np.ndarray,
+    redshift: np.ndarray,
+    *,
+    flux_like: bool,
+    bin_width: float,
+) -> np.ndarray:
+    if bin_width <= 0:
+        raise ValueError("legacy_photometry.redshift_bin_width must be positive")
+
+    out = values.astype(float, copy=True)
+    finite = np.isfinite(values) & np.isfinite(redshift)
+    if np.sum(finite) < 2:
+        return out
+
+    z_finite = redshift[finite]
+    z_min = np.nanmin(z_finite)
+    z_max = np.nanmax(z_finite)
+    bins = np.arange(z_min - 2.0 * bin_width, z_max + 2.0 * bin_width, bin_width)
+    if len(bins) < 2:
+        return out
+
+    medians = []
+    centers = []
+    for lo, hi in zip(bins[:-1], bins[1:]):
+        use = finite & (redshift >= lo) & (redshift < hi)
+        if np.any(use):
+            medians.append(np.nanmedian(values[use]))
+        else:
+            medians.append(np.nan)
+        centers.append(0.5 * (lo + hi))
+    medians = np.asarray(medians, dtype=float)
+    centers = np.asarray(centers, dtype=float)
+    good_bins = np.isfinite(medians)
+    if np.sum(good_bins) < 2:
+        return out
+
+    trend = np.interp(
+        redshift[finite],
+        centers[good_bins],
+        medians[good_bins],
+        left=medians[good_bins][0],
+        right=medians[good_bins][-1],
+    )
+    center = np.nanmedian(values[finite])
+    if flux_like:
+        good_trend = np.isfinite(trend) & (trend != 0)
+        finite_indices = np.where(finite)[0]
+        out[finite_indices[good_trend]] = (
+            values[finite_indices[good_trend]] / trend[good_trend] * center
+        )
+    else:
+        out[finite] = values[finite] - trend + center
+    return out
+
+
+def _legacy_outlier_nan_masked(
+    values: np.ndarray,
+    redshift: np.ndarray,
+    config: Mapping[str, Any],
+) -> np.ndarray:
+    try:
+        from sklearn.ensemble import IsolationForest
+    except ImportError as exc:
+        raise ImportError(
+            "legacy_photometry outlier cleaning requires scikit-learn"
+        ) from exc
+
+    out = values.astype(float, copy=True)
+    finite = np.isfinite(values) & np.isfinite(redshift)
+    min_samples = int(config.get("min_samples", 2))
+    if np.sum(finite) < min_samples:
+        return out
+
+    model = IsolationForest(**_legacy_isolation_forest_kwargs(config))
+    features = np.column_stack((values[finite], redshift[finite]))
+    keep = model.fit_predict(features) == 1
+    finite_indices = np.where(finite)[0]
+    out[finite_indices[~keep]] = np.nan
+    return out
+
+
+def _legacy_isolation_forest_kwargs(config: Mapping[str, Any]) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "random_state": config.get("random_state", 42),
+    }
+    for key in (
+        "n_estimators",
+        "contamination",
+        "max_samples",
+        "max_features",
+        "bootstrap",
+        "n_jobs",
+        "warm_start",
+    ):
+        if key in config:
+            kwargs[key] = config[key]
+    return kwargs
+
+
+def _legacy_flux_like(column: str) -> bool:
+    lower = column.lower()
+    return lower.startswith("flux_") or "_flux_" in lower
 
 
 def _apply_robust_clip(

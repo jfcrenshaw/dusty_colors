@@ -4,6 +4,7 @@ from pathlib import Path
 import os
 import sys
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 
 import numpy as np
@@ -17,11 +18,16 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from dusty_colors.config import load_resolved_config, parse_array_spec, stable_hash
-from dusty_colors.pipeline import (
+from dusty_colors.config import (  # noqa: E402
+    load_resolved_config,
+    parse_array_spec,
+    stable_hash,
+)
+from dusty_colors.pipeline import (  # noqa: E402
     ForceOptions,
     ManifestMismatchError,
     StageHandlers,
+    _wrap_domain_handler,
     run_pipeline,
 )
 
@@ -176,6 +182,47 @@ class ConfigPipelineTest(unittest.TestCase):
                 [stage.action for stage in forced.stages],
                 ["skip", "run", "run"],
             )
+
+    def test_stack_wrapper_prefers_sample_footprint_when_present(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sample_dir = root / "sample"
+            catalog_dir = root / "catalog"
+            output_dir = root / "stack"
+            sample_dir.mkdir()
+            catalog_dir.mkdir()
+            (sample_dir / "footprint.parquet").write_bytes(b"sample footprint")
+            (catalog_dir / "footprint.parquet").write_bytes(b"catalog footprint")
+            called = {}
+
+            def stack_handler(
+                sample_path,
+                output_path,
+                stack_config,
+                *,
+                footprint_path,
+                force,
+            ) -> None:
+                called["sample_path"] = sample_path
+                called["output_path"] = output_path
+                called["stack_config"] = stack_config
+                called["footprint_path"] = footprint_path
+                called["force"] = force
+
+            context = SimpleNamespace(
+                input_dirs={"sample": sample_dir, "catalog": catalog_dir},
+                output_dir=output_dir,
+                config=SimpleNamespace(data={"stack": {"random_seed": 11}}),
+                force=True,
+            )
+
+            _wrap_domain_handler("stack", stack_handler)(context)
+
+            self.assertEqual(called["footprint_path"], sample_dir / "footprint.parquet")
+            self.assertEqual(called["sample_path"], sample_dir)
+            self.assertEqual(called["output_path"], output_dir)
+            self.assertEqual(called["stack_config"], {"random_seed": 11})
+            self.assertTrue(called["force"])
 
 
 if __name__ == "__main__":

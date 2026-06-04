@@ -14,7 +14,7 @@ import treecorr
 import yaml
 from astropy.cosmology import Planck18 as cosmo
 
-from .observables import build_observable
+from .observables import build_observable, observable_column_names
 
 ColorMode = Literal["fcolors", "mcolors"]
 StackDirection = Literal["forward", "flipped"]
@@ -92,6 +92,7 @@ class TreeCorrStacker:
     random_multiplier: float = 5.0
     random_seed: int = 42
     random_nside: int = 1024
+    prefer_observable_columns: bool = False
 
     def __post_init__(self) -> None:
         self.out_dir = Path(self.out_dir)
@@ -458,9 +459,14 @@ class TreeCorrStacker:
     def _observable(
         self, catalog: pd.DataFrame, color: str, mode: ColorMode
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        observable = build_observable(catalog, color, mode, snr_max=self.snr_max)
-        value = observable["value"].to_numpy(float)
-        err = observable["error"].to_numpy(float)
+        value_col, err_col = observable_column_names(color, mode)
+        if self.prefer_observable_columns and {value_col, err_col}.issubset(catalog):
+            value = catalog[value_col].to_numpy(float)
+            err = catalog[err_col].to_numpy(float)
+        else:
+            observable = build_observable(catalog, color, mode, snr_max=self.snr_max)
+            value = observable["value"].to_numpy(float)
+            err = observable["error"].to_numpy(float)
         good = np.isfinite(value) & np.isfinite(err) & (err > 0)
         if mode == "fcolors":
             good &= value > 0

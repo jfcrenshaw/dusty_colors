@@ -483,11 +483,17 @@ def _wrap_domain_handler(
     if kind == "stack":
 
         def run_stack(context: StageContext) -> None:
+            sample_footprint = context.input_dirs["sample"] / "footprint.parquet"
+            footprint_path = (
+                sample_footprint
+                if sample_footprint.exists()
+                else context.input_dirs["catalog"] / "footprint.parquet"
+            )
             handler(
                 context.input_dirs["sample"],
                 context.output_dir,
                 context.config.data.get("stack", {}),
-                footprint_path=context.input_dirs["catalog"] / "footprint.parquet",
+                footprint_path=footprint_path,
                 force=context.force,
             )
 
