@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib.util
+from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -12,8 +14,12 @@ from dusty_colors.catalogs import (
     prepare_catalog,
     validate_canonical_schema,
 )
-from dusty_colors.cleaning import add_diagnostic_columns, apply_minimal_cleaning
-from dusty_colors.enrichments import apply_enrichments
+from dusty_colors.cleaning import (
+    add_diagnostic_columns,
+    apply_minimal_cleaning,
+    clean_sample,
+)
+from dusty_colors.enrichments import apply_enrichments, _resolve_response_names
 from dusty_colors.observables import (
     add_observable_columns,
     flux_ratio_observable,
@@ -22,6 +28,8 @@ from dusty_colors.observables import (
 from dusty_colors.selection import select_samples, write_sample_outputs
 from dusty_colors.treecorr_stacker import TreeCorrStacker
 from astropy.cosmology import Planck18 as cosmo
+
+SKLEARN_AVAILABLE = importlib.util.find_spec("sklearn") is not None
 
 
 class CatalogSampleSliceTest(unittest.TestCase):
@@ -273,6 +281,98 @@ class CatalogSampleSliceTest(unittest.TestCase):
         self.assertIn("diagnostic_snr_g", with_observable)
         self.assertIn("fcolor_g_r", with_observable)
 
+    def test_disabled_clean_sample_is_no_op(self) -> None:
+        catalog = pd.DataFrame(
+            {
+                "object_id": [1, 2],
+                "z_phot": [0.2, np.nan],
+                "flux_g": [10.0, 999.0],
+                "color_gr": [0.3, 99.0],
+            }
+        )
+        config = {
+            "enabled": False,
+            "finite_columns": ["missing_when_disabled"],
+            "redshift_trend": {
+                "redshift_column": "missing_when_disabled",
+                "columns": ["color_gr"],
+                "degree": 1,
+                "output_suffix": "_z_detrended",
+            },
+            "isolation_forest": {
+                "columns": ["missing_when_disabled"],
+                "contamination": 0.5,
+                "random_state": 11,
+            },
+        }
+
+        cleaned = clean_sample(catalog, config)
+
+        pd.testing.assert_frame_equal(cleaned, catalog)
+
+    @unittest.skipUnless(SKLEARN_AVAILABLE, "scikit-learn is not installed")
+    def test_isolation_forest_cleaning_removes_outlier_deterministically(self) -> None:
+        catalog = pd.DataFrame(
+            {
+                "object_id": [1, 2, 3, 4, 5, 99],
+                "feature_x": [0.0, 0.0, 0.0, 0.0, 0.0, 12.0],
+                "feature_y": [0.0, 0.0, 0.0, 0.0, 0.0, 12.0],
+            }
+        )
+        config = {
+            "enabled": True,
+            "isolation_forest": {
+                "columns": ["feature_x", "feature_y"],
+                "contamination": 1.0 / 6.0,
+                "random_state": 7,
+                "n_estimators": 64,
+                "max_samples": 6,
+            },
+        }
+
+        cleaned = clean_sample(catalog, config)
+
+        self.assertEqual(list(cleaned["object_id"]), [1, 2, 3, 4, 5])
+
+    def test_redshift_trend_adds_detrended_columns_without_overwriting(self) -> None:
+        catalog = pd.DataFrame(
+            {
+                "object_id": [1, 2, 3, 4, 5],
+                "z_phot": [0.1, 0.2, 0.3, np.nan, 0.4],
+                "color_gr": [1.2, 1.4, 1.6, 9.0, 1.8],
+                "flux_g": [10.0, 20.0, 30.0, 40.0, 50.0],
+            }
+        )
+        original = catalog.copy(deep=True)
+        config = {
+            "enabled": True,
+            "redshift_trend": {
+                "redshift_column": "z_phot",
+                "columns": ["color_gr", "flux_g"],
+                "degree": 1,
+                "output_suffix": "_z_detrended",
+            },
+        }
+
+        cleaned = clean_sample(catalog, config)
+
+        self.assertIn("color_gr_z_detrended", cleaned)
+        self.assertIn("flux_g_z_detrended", cleaned)
+        pd.testing.assert_series_equal(cleaned["color_gr"], original["color_gr"])
+        pd.testing.assert_series_equal(cleaned["flux_g"], original["flux_g"])
+        finite_color = np.isfinite(original["z_phot"]) & np.isfinite(
+            original["color_gr"]
+        )
+        np.testing.assert_allclose(
+            cleaned.loc[finite_color, "color_gr_z_detrended"],
+            np.zeros(int(finite_color.sum())),
+            atol=1e-12,
+        )
+        self.assertTrue(np.isnan(cleaned.loc[3, "color_gr_z_detrended"]))
+        self.assertTrue(
+            np.isfinite(cleaned.loc[finite_color, "flux_g_z_detrended"]).all()
+        )
+
     def test_observable_error_propagation_from_fluxes(self) -> None:
         catalog = pd.DataFrame(
             {
@@ -318,6 +418,19 @@ class CatalogSampleSliceTest(unittest.TestCase):
         self.assertTrue(np.isfinite(enriched.loc[0, "halo_mass_log"]))
         self.assertTrue(np.isfinite(enriched.loc[0, "r200_mpc"]))
         self.assertTrue(np.isnan(enriched.loc[1, "halo_mass_log"]))
+
+    def test_kcorrect_response_paths_are_normalized_to_stems(self) -> None:
+        responses = _resolve_response_names(
+            [
+                "data/bandpasses/bandpass_u_v1p9.dat",
+                "sdss_g0",
+            ]
+        )
+
+        self.assertTrue(responses[0].endswith("data/bandpasses/bandpass_u_v1p9"))
+        self.assertFalse(responses[0].endswith(".dat"))
+        self.assertTrue(Path(responses[0]).is_absolute())
+        self.assertEqual(responses[1], "sdss_g0")
 
     def test_treecorr_stacker_defaults_to_kpc_radii(self) -> None:
         foreground = pd.DataFrame(

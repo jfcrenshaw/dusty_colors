@@ -25,6 +25,7 @@ dependencies = [
     "healsparse>=1.11",
     "treecorr>=5.1",
     "kcorrect>=5.1",
+    "scikit-learn>=1.7",
     "seaborn>=0.13",
     "dust_extinction>=1.7",
 ]

@@ -57,8 +57,7 @@ def apply_kcorrect(
             "kcorrect enrichment requires the 'kcorrect' package"
         ) from exc
 
-    model_path = _resolve_path(config.get("model", config.get("filename")))
-    kc = Kcorrect(filename=str(model_path))
+    kc = _build_kcorrect(Kcorrect, config)
 
     response_bands = list(
         config.get("response_bands")
@@ -268,6 +267,57 @@ def _apply_error_floor(
 
 def _nanjy_to_maggies(value: np.ndarray) -> np.ndarray:
     return np.asarray(value, dtype=float) * 10 ** (-0.4 * MAGSYS_ZEROPOINT)
+
+
+def _build_kcorrect(kcorrect_cls: Any, config: Mapping[str, Any]) -> Any:
+    model = config.get("model", config.get("filename"))
+    if model is not None:
+        return kcorrect_cls(filename=str(_resolve_path(model)))
+
+    responses = config.get("responses")
+    if not responses:
+        raise ValueError("kcorrect enrichment requires either 'model' or 'responses'")
+
+    kwargs: dict[str, Any] = {
+        "responses": _resolve_response_names(responses),
+    }
+    if "responses_out" in config:
+        kwargs["responses_out"] = _resolve_response_names(config["responses_out"])
+    if "responses_map" in config:
+        kwargs["responses_map"] = _resolve_response_names(config["responses_map"])
+    if "redshift_range" in config:
+        kwargs["redshift_range"] = list(config["redshift_range"])
+    if "nredshift" in config:
+        kwargs["nredshift"] = int(config["nredshift"])
+    if "abcorrect" in config:
+        kwargs["abcorrect"] = bool(config["abcorrect"])
+    if "interpolate_templates" in config:
+        kwargs["interpolate_templates"] = bool(config["interpolate_templates"])
+    return kcorrect_cls(**kwargs)
+
+
+def _resolve_response_names(responses: Any) -> list[str]:
+    if not isinstance(responses, (list, tuple)):
+        raise ValueError("kcorrect responses must be a list")
+    return [_resolve_response_name(response) for response in responses]
+
+
+def _resolve_response_name(response: Any) -> str:
+    path = Path(response)
+    source_path = path
+    if path.suffix == ".dat":
+        path = path.with_suffix("")
+    if path.parent == Path("."):
+        return str(path)
+
+    source_exists = source_path.exists() or (ROOT / source_path).exists()
+    if not path.is_absolute() and source_exists:
+        path = ROOT / path
+    elif not path.is_absolute() and path.exists():
+        path = path.resolve()
+    elif path.is_absolute():
+        path = path.resolve()
+    return str(path)
 
 
 def _stellar_mass_linear(

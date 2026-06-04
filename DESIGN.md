@@ -41,6 +41,11 @@ results/stacks/<analysis_id>/
 
 Catalog preparation owns raw input adaptation, field metadata, footprint pixels, and canonical schema validation. Sample selection owns foreground/background membership and optional diagnostic cleaning. TreeCorr stacking owns only the color-stack estimator and output stack files.
 
+Catalog variants should be separate catalog YAML files when they change reusable
+catalog products. For DP1, `configs/catalogs/dp1.yaml` uses the standard
+kcorrect template set and `configs/catalogs/dp1_pai_blanton2024.yaml` uses the
+expanded Pai & Blanton 2024 template set.
+
 ## YAML Interfaces
 
 Catalog YAML owns raw input adaptation and footprint metadata:
@@ -86,7 +91,13 @@ extinction:
 enrichments:
   kcorrect:
     enabled: true
-    model: data/kcorrect_broad.fits
+    responses:
+      - data/bandpasses/bandpass_u_v1p9.dat
+      - data/bandpasses/bandpass_g_v1p9.dat
+      - data/bandpasses/bandpass_r_v1p9.dat
+      - data/bandpasses/bandpass_i_v1p9.dat
+      - data/bandpasses/bandpass_z_v1p9.dat
+      - data/bandpasses/bandpass_y_v1p9.dat
     response_bands: [u, g, r, i, z, y]
     max_redshift: 0.5
 footprint:

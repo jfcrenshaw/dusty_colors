@@ -11,3 +11,4 @@ dependencies:
   - matplotlib
   - jupyterlab
   - treecorr
+  - scikit-learn
