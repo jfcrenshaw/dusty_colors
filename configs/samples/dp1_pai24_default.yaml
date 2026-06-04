@@ -9,10 +9,10 @@ selection:
   blendedness_max:
     column: blendedness_i
     value: 0.42
-  magnitude_limit:
-    band: r
-    max: 24.0
-    flux_col: cmodel_flux_r
+  magnitude_limits:
+    - band: r
+      max: 24.0
+      flux_col: cmodel_flux_r
   shared_query: null
   foreground_query: null
   background_query: null

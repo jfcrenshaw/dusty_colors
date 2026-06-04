@@ -58,6 +58,27 @@ class _JackknifeStats:
 
 
 @dataclass
+class _EstimatorResult:
+    signal: np.ndarray
+    signal_err: np.ndarray
+    covariance: np.ndarray
+    analytic_err: np.ndarray
+    delta: np.ndarray
+    delta_err: np.ndarray
+    raw_delta: np.ndarray
+    raw_delta_err: np.ndarray
+    ref: float
+    ref_err: float
+    raw_ref: float
+    raw_ref_err: float
+    random_delta: np.ndarray | None
+    random_delta_err: np.ndarray | None
+    random_ref: float | None
+    random_ref_err: float | None
+    jackknife: _JackknifeStats | None
+
+
+@dataclass
 class TreeCorrStacker:
     """Measure color excess profiles with the TreeCorr estimator.
 
@@ -67,6 +88,10 @@ class TreeCorrStacker:
     samples, ``ra`` and ``dec`` on background samples, and either
     ``flux_<band>``/``fluxerr_<band>`` or ``mag_<band>``/``magerr_<band>`` for
     requested colors.
+
+    The workflow is: validate samples, prepare jackknife/random catalogs, measure
+    forward/flipped profiles, subtract random and reference-annulus signals, then
+    write arrays for plotting and downstream checks.
     """
 
     foreground: pd.DataFrame
@@ -626,6 +651,33 @@ class TreeCorrStacker:
         random_forward: _Profile | None = None,
         random_flipped: _Profile | None = None,
     ) -> dict[str, np.ndarray]:
+        estimate = self._color_excess_estimate(
+            mode,
+            forward,
+            flipped,
+            len(bins),
+            random_forward=random_forward,
+            random_flipped=random_flipped,
+        )
+        return self._result_arrays(
+            color,
+            bins,
+            forward,
+            flipped,
+            estimate,
+            random_forward=random_forward,
+            random_flipped=random_flipped,
+        )
+
+    def _color_excess_estimate(
+        self,
+        mode: ColorMode,
+        forward: _Profile,
+        flipped: _Profile | None,
+        n_bins: int,
+        random_forward: _Profile | None = None,
+        random_flipped: _Profile | None = None,
+    ) -> _EstimatorResult:
         use_flipped = self.flipped_correction
         if use_flipped and flipped is None:
             raise ValueError("Flipped correction requires a flipped profile")
@@ -676,7 +728,7 @@ class TreeCorrStacker:
             mode,
             forward,
             flipped,
-            len(bins),
+            n_bins,
             random_forward=random_forward,
             random_flipped=random_flipped,
         )
@@ -685,21 +737,52 @@ class TreeCorrStacker:
         )
         estimator_err = jackknife.err if jackknife is not None else analytic_err
 
+        return _EstimatorResult(
+            signal=estimator,
+            signal_err=estimator_err,
+            covariance=covariance,
+            analytic_err=analytic_err,
+            delta=delta,
+            delta_err=delta_err,
+            raw_delta=raw_delta,
+            raw_delta_err=raw_delta_err,
+            ref=float(ref),
+            ref_err=float(ref_err),
+            raw_ref=float(raw_ref),
+            raw_ref_err=float(raw_ref_err),
+            random_delta=random_delta if has_random else None,
+            random_delta_err=random_delta_err if has_random else None,
+            random_ref=float(random_ref) if has_random else None,
+            random_ref_err=float(random_ref_err) if has_random else None,
+            jackknife=jackknife,
+        )
+
+    def _result_arrays(
+        self,
+        color: str,
+        bins: list[_RadialBin],
+        forward: _Profile,
+        flipped: _Profile | None,
+        estimate: _EstimatorResult,
+        random_forward: _Profile | None = None,
+        random_flipped: _Profile | None = None,
+    ) -> dict[str, np.ndarray]:
+        use_flipped = self.flipped_correction
         result = {
             f"{color}_bin_centers": self._bin_centers(bins),
-            f"{color}_avg": estimator,
-            f"{color}_err": estimator_err,
-            f"{color}_cov": covariance,
-            f"{color}_analytic_err": analytic_err,
-            f"{color}_delta_avg": delta,
-            f"{color}_delta_err": delta_err,
-            f"{color}_raw_delta_avg": raw_delta,
-            f"{color}_raw_delta_err": raw_delta_err,
-            f"{color}_ref_avg": np.array(ref),
-            f"{color}_ref_err": np.array(ref_err),
-            f"{color}_raw_ref_avg": np.array(raw_ref),
-            f"{color}_raw_ref_err": np.array(raw_ref_err),
-            f"{color}_uncorrected_avg": raw_delta - raw_ref,
+            f"{color}_avg": estimate.signal,
+            f"{color}_err": estimate.signal_err,
+            f"{color}_cov": estimate.covariance,
+            f"{color}_analytic_err": estimate.analytic_err,
+            f"{color}_delta_avg": estimate.delta,
+            f"{color}_delta_err": estimate.delta_err,
+            f"{color}_raw_delta_avg": estimate.raw_delta,
+            f"{color}_raw_delta_err": estimate.raw_delta_err,
+            f"{color}_ref_avg": np.array(estimate.ref),
+            f"{color}_ref_err": np.array(estimate.ref_err),
+            f"{color}_raw_ref_avg": np.array(estimate.raw_ref),
+            f"{color}_raw_ref_err": np.array(estimate.raw_ref_err),
+            f"{color}_uncorrected_avg": estimate.raw_delta - estimate.raw_ref,
             f"{color}_forward_avg": forward.color,
             f"{color}_forward_err": forward.color_err,
             f"{color}_forward_raw_avg": forward.raw,
@@ -716,13 +799,13 @@ class TreeCorrStacker:
                     f"{color}_flipped_npairs": flipped.npairs,
                 }
             )
-        if has_random:
+        if estimate.random_delta is not None:
             result.update(
                 {
-                    f"{color}_random_delta_avg": random_delta,
-                    f"{color}_random_delta_err": random_delta_err,
-                    f"{color}_random_ref_avg": np.array(random_ref),
-                    f"{color}_random_ref_err": np.array(random_ref_err),
+                    f"{color}_random_delta_avg": estimate.random_delta,
+                    f"{color}_random_delta_err": estimate.random_delta_err,
+                    f"{color}_random_ref_avg": np.array(estimate.random_ref),
+                    f"{color}_random_ref_err": np.array(estimate.random_ref_err),
                     f"{color}_random_forward_avg": random_forward.color,
                     f"{color}_random_forward_err": random_forward.color_err,
                     f"{color}_random_forward_raw_avg": random_forward.raw,
@@ -740,13 +823,15 @@ class TreeCorrStacker:
                         f"{color}_random_flipped_npairs": random_flipped.npairs,
                     }
                 )
-        if jackknife is not None:
+        if estimate.jackknife is not None:
             result.update(
                 {
-                    f"{color}_jackknife_avg": jackknife.mean,
-                    f"{color}_jackknife_err": jackknife.err,
-                    f"{color}_jackknife_samples": jackknife.samples,
-                    f"{color}_jackknife_patch": np.arange(jackknife.samples.shape[0]),
+                    f"{color}_jackknife_avg": estimate.jackknife.mean,
+                    f"{color}_jackknife_err": estimate.jackknife.err,
+                    f"{color}_jackknife_samples": estimate.jackknife.samples,
+                    f"{color}_jackknife_patch": np.arange(
+                        estimate.jackknife.samples.shape[0]
+                    ),
                 }
             )
         return result

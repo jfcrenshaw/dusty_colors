@@ -12,8 +12,8 @@ import numpy as np
 import pandas as pd
 
 from dusty_colors.catalogs import (
-    adapt_clauds_sextractor_catalog,
-    adapt_dp1_catalog,
+    ClaudsSExtractorCatalogAdapter,
+    DP1CatalogAdapter,
     prepare_catalog,
     validate_canonical_schema,
 )
@@ -23,7 +23,7 @@ from dusty_colors.cleaning import (
     clean_sample,
 )
 from dusty_colors.enrichments import (
-    _resolve_response_names,
+    KcorrectEnrichment,
     apply_enrichments,
     apply_kcorrect,
 )
@@ -62,7 +62,9 @@ class CatalogSampleSliceTest(unittest.TestCase):
             }
         )
 
-        catalog = adapt_dp1_catalog(raw, {"bands": ["g", "r"], "photometry": "flux"})
+        catalog = DP1CatalogAdapter({"bands": ["g", "r"], "photometry": "flux"}).adapt(
+            raw
+        )
 
         validate_canonical_schema(catalog, bands=["g", "r"], photometry="flux")
         self.assertEqual(list(catalog["object_id"]), [10, 11])
@@ -261,9 +263,9 @@ class CatalogSampleSliceTest(unittest.TestCase):
             }
         )
 
-        catalog = adapt_clauds_sextractor_catalog(
-            raw, {"bands": ["g", "r"], "photometry": "mag"}
-        )
+        catalog = ClaudsSExtractorCatalogAdapter(
+            {"bands": ["g", "r"], "photometry": "mag"}
+        ).adapt(raw)
 
         validate_canonical_schema(catalog, bands=["g", "r"], photometry="mag")
         np.testing.assert_allclose(catalog["z_phot_err"], [0.05, 0.1])
@@ -347,11 +349,13 @@ class CatalogSampleSliceTest(unittest.TestCase):
                     "column": "blendedness_i",
                     "value": 0.42,
                 },
-                "magnitude_limit": {
-                    "band": "r",
-                    "max": 24.0,
-                    "flux_col": "cmodel_flux_r",
-                },
+                "magnitude_limits": [
+                    {
+                        "band": "r",
+                        "max": 24.0,
+                        "flux_col": "cmodel_flux_r",
+                    }
+                ],
             }
         }
 
@@ -521,7 +525,7 @@ class CatalogSampleSliceTest(unittest.TestCase):
             "enabled": False,
             "finite_columns": ["missing_when_disabled"],
             "redshift_trend": {
-                "redshift_column": "missing_when_disabled",
+                "redshift_col": "missing_when_disabled",
                 "columns": ["color_gr"],
                 "degree": 1,
                 "output_suffix": "_z_detrended",
@@ -640,7 +644,7 @@ class CatalogSampleSliceTest(unittest.TestCase):
         config = {
             "enabled": True,
             "redshift_trend": {
-                "redshift_column": "z_phot",
+                "redshift_col": "z_phot",
                 "columns": ["color_gr", "flux_g"],
                 "degree": 1,
                 "output_suffix": "_z_detrended",
@@ -779,7 +783,7 @@ class CatalogSampleSliceTest(unittest.TestCase):
         self.assertTrue(np.isnan(enriched.loc[3, "stellar_mass_log"]))
 
     def test_kcorrect_response_paths_are_normalized_to_stems(self) -> None:
-        responses = _resolve_response_names(
+        responses = KcorrectEnrichment.resolve_response_names(
             [
                 "data/bandpasses/bandpass_u_v1p9.dat",
                 "sdss_g0",

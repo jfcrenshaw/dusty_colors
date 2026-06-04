@@ -1,0 +1,11 @@
+id: dp1_default_norand
+sample: configs/samples/dp1_default.yaml
+stack:
+  colors: [g-i]
+  modes: [fcolors]
+  r_bin_edges:
+    geomspace: { start: 5.0, stop: 1000.0, num: 6 }
+  reference_annulus: [2000.0, 4000.0]
+  snr_max: 100
+  random_correction: false
+  jackknife: true

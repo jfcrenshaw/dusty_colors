@@ -136,8 +136,8 @@ def _join_kwargs(config: Mapping[str, Any], source_name: str) -> dict[str, Any]:
         kwargs["on"] = config["on"]
         right_key = str(config["on"])
     else:
-        left_key = config.get("left_key", config.get("left_on"))
-        right_key = config.get("right_key", config.get("right_on", left_key))
+        left_key = config.get("left_key")
+        right_key = config.get("right_key", left_key)
         if left_key is None or right_key is None:
             raise ValueError("Join config must define either 'on' or left/right keys")
         kwargs["left_on"] = left_key
@@ -153,5 +153,5 @@ def _join_kwargs(config: Mapping[str, Any], source_name: str) -> dict[str, Any]:
 def _join_right_columns(config: Mapping[str, Any]) -> list[str]:
     if "on" in config:
         return [str(config["on"])]
-    right_key = config.get("right_key", config.get("right_on"))
+    right_key = config.get("right_key")
     return [] if right_key is None else [str(right_key)]

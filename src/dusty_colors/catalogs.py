@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping
+from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -17,8 +18,6 @@ from .footprint import (
     footprint_table,
 )
 from .sources import assemble_sources
-
-DEFAULT_AUXILIARY_FLUX_TYPES = ("cModel", "free_cModel")
 
 REQUIRED_COLUMNS = {
     "object_id",
@@ -37,14 +36,9 @@ def prepare_catalog(config: Mapping[str, Any], output_dir: str | Path) -> None:
     """Prepare and write a canonical catalog plus footprint table."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    adapter_name = str(config["adapter"])
-    try:
-        adapter = ADAPTERS[adapter_name]
-    except KeyError as exc:
-        raise ValueError(f"Unknown catalog adapter: {adapter_name}") from exc
 
     source = assemble_sources(config)
-    catalog = adapter(source, config)
+    catalog = _catalog_adapter(config).adapt(source)
     catalog = apply_extinction_correction(catalog, config)
     catalog = apply_enrichments(catalog, config)
     catalog = _apply_footprint_config(catalog, config)
@@ -90,175 +84,330 @@ def validate_canonical_schema(
         validate_catalog(catalog, bands=bands)
 
 
-def adapt_dp1_catalog(source: pd.DataFrame, config: Mapping[str, Any]) -> pd.DataFrame:
-    """Adapt an assembled DP1 source table to the canonical schema."""
-    source = _with_photoz_columns(source, config)
-    bands = _catalog_bands(config)
-    flux_type = str(config.get("flux_type", "gaap1p0"))
-    photometry = config.get("photometry")
-    column_map = dict(config.get("columns", {}))
+class CatalogAdapter(ABC):
+    """Base class for one raw catalog format.
 
-    out = pd.DataFrame()
-    out["object_id"] = _mapped_or_first(
-        source, column_map, "object_id", ["object_id", "objectID", "objectId"]
-    )
-    out["ra"] = _mapped_or_first(source, column_map, "ra", ["ra", "coord_ra", "RA"])
-    out["dec"] = _mapped_or_first(
-        source, column_map, "dec", ["dec", "coord_dec", "DEC"]
-    )
-    out["field"] = _optional_column(source, column_map, "field", ["field"], "unknown")
-    out["z_phot"] = _mapped_or_first(source, column_map, "z_phot", ["z_phot"])
-    out["z_phot_err"] = _optional_column(
-        source,
-        column_map,
-        "z_phot_err",
-        ["z_phot_err"],
-        np.nan,
-    )
-    if "is_galaxy" in column_map or "is_galaxy" in source:
-        out["is_galaxy"] = _mapped_or_first(
-            source, column_map, "is_galaxy", ["is_galaxy"]
-        ).astype(bool)
-    elif "refExtendedness" in source:
-        threshold = float(config.get("extendedness_min", 0.5))
-        out["is_galaxy"] = source["refExtendedness"] > threshold
-    else:
-        out["is_galaxy"] = True
-    out["mask_ok"] = _optional_column(
-        source,
-        column_map,
-        "mask_ok",
-        ["mask_ok"],
-        True,
-    )
-    out["quality_ok"] = _optional_column(
-        source,
-        column_map,
-        "quality_ok",
-        ["quality_ok"],
-        True,
-    )
-    if "redshift" in source:
-        out["spec_z"] = source["redshift"]
-    if "confidence" in source:
-        out["spec_z_confidence"] = source["confidence"]
-    if "ebv" in source:
-        out["ebv"] = source["ebv"]
-    if "refExtendedness" in source:
-        out["ref_extendedness"] = source["refExtendedness"]
-    for col in source.columns:
-        if col.endswith("_blendedness"):
-            band = col.removesuffix("_blendedness")
-            out[f"blendedness_{band}"] = source[col]
-        if col == "z_phot_diff" or col.startswith("photoz_"):
-            out[col] = source[col]
-    if "stellar_mass_log" in source:
-        out["stellar_mass_log"] = source["stellar_mass_log"]
-    if "stellar_mass" in source:
-        out["stellar_mass_log"] = _to_log_mass(source["stellar_mass"])
+    Subclasses turn survey-specific columns into the canonical dusty-colors
+    schema. The shared helpers keep the adapter code focused on the astronomy:
+    positions, redshifts, object flags, and photometry.
+    """
 
-    for band in bands:
-        if photometry in (None, "flux"):
-            _copy_if_exists(source, out, f"{band}_{flux_type}Flux", f"flux_{band}")
-            _copy_if_exists(
-                source, out, f"{band}_{flux_type}FluxErr", f"fluxerr_{band}"
+    def __init__(self, config: Mapping[str, Any]) -> None:
+        self.config = config
+        self.column_map = dict(config.get("columns", {}))
+
+    @abstractmethod
+    def adapt(self, source: pd.DataFrame) -> pd.DataFrame:
+        """Return a canonical catalog from an assembled source table."""
+
+    def mapped_or_first(
+        self,
+        source: pd.DataFrame,
+        logical_name: str,
+        defaults: list[str],
+    ) -> pd.Series:
+        names = [self.mapped_name(logical_name, defaults[0]), *defaults]
+        return self.first_existing(source, names)
+
+    def optional_column(
+        self,
+        source: pd.DataFrame,
+        logical_name: str,
+        defaults: list[str],
+        default: Any,
+    ) -> Any:
+        try:
+            return self.mapped_or_first(source, logical_name, defaults)
+        except ValueError:
+            return default
+
+    def mapped_name(self, logical_name: str, default: str) -> str:
+        return str(self.column_map.get(logical_name, default))
+
+    @staticmethod
+    def first_existing(source: pd.DataFrame, names: list[str]) -> pd.Series:
+        for name in names:
+            if name in source:
+                return source[name]
+        raise ValueError(f"None of these columns exist: {names}")
+
+    @staticmethod
+    def copy_if_exists(
+        source: pd.DataFrame,
+        target: pd.DataFrame,
+        source_col: str,
+        target_col: str,
+    ) -> None:
+        if source_col in source:
+            target[target_col] = source[source_col]
+
+    @staticmethod
+    def copy_first_existing(
+        source: pd.DataFrame,
+        target: pd.DataFrame,
+        source_cols: list[str],
+        target_col: str,
+    ) -> None:
+        for col in source_cols:
+            if col in source:
+                target[target_col] = source[col]
+                return
+
+    def with_photoz_columns(self, source: pd.DataFrame) -> pd.DataFrame:
+        photoz = self.config.get("photoz", {})
+        if not photoz:
+            return source
+        if not isinstance(photoz, Mapping):
+            raise ValueError("Catalog 'photoz' must be a mapping")
+
+        combine = photoz.get("combine", photoz)
+        if not isinstance(combine, Mapping) or "estimates" not in combine:
+            return source
+
+        estimates = list(combine["estimates"])
+        if len(estimates) == 0:
+            raise ValueError("photoz.combine.estimates must not be empty")
+
+        out = source.copy()
+        values = []
+        sigmas = []
+        labels = []
+        for estimate in estimates:
+            if not isinstance(estimate, Mapping):
+                raise ValueError("Each photoz estimate must be a mapping")
+            z_col = str(estimate["z"])
+            if z_col not in out:
+                raise ValueError(f"Photo-z estimate column is missing: {z_col}")
+            values.append(out[z_col].to_numpy(float))
+            sigmas.append(self.photoz_sigma(out, estimate))
+            labels.append(str(estimate.get("label", self.photoz_label(z_col))))
+
+        z_values = np.column_stack(values)
+        z_sigmas = np.column_stack(sigmas)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            weights = np.where(z_sigmas > 0, 1.0 / z_sigmas**2, 0.0)
+            weight_sum = np.sum(weights, axis=1)
+            z_phot = np.sum(z_values * weights, axis=1) / weight_sum
+            z_err = np.sqrt(1.0 / weight_sum)
+        bad = (weight_sum <= 0) | ~np.isfinite(z_phot) | ~np.isfinite(z_err)
+        z_phot[bad] = np.nan
+        z_err[bad] = np.nan
+
+        out[str(combine.get("z_col", "z_phot"))] = z_phot
+        out[str(combine.get("err_col", "z_phot_err"))] = z_err
+        for label, value, sigma in zip(labels, values, sigmas):
+            out[f"photoz_{label}"] = value
+            out[f"photoz_sigma_{label}"] = sigma
+        diff_col = combine.get("diff_col", "z_phot_diff")
+        if diff_col:
+            out[str(diff_col)] = np.nanmax(z_values, axis=1) - np.nanmin(
+                z_values, axis=1
             )
-        if photometry in (None, "mag"):
-            _copy_if_exists(source, out, f"{band}_{flux_type}Mag", f"mag_{band}")
-            _copy_if_exists(source, out, f"{band}_{flux_type}MagErr", f"magerr_{band}")
-        for aux_flux_type in config.get(
-            "auxiliary_flux_types",
-            DEFAULT_AUXILIARY_FLUX_TYPES,
-        ):
-            label = _photometry_label(str(aux_flux_type))
-            _copy_if_exists(
-                source,
-                out,
-                f"{band}_{aux_flux_type}Flux",
-                f"{label}_flux_{band}",
-            )
-            _copy_if_exists(
-                source,
-                out,
-                f"{band}_{aux_flux_type}FluxErr",
-                f"{label}_fluxerr_{band}",
-            )
-        _copy_if_exists(source, out, f"{band}5_pixel", f"depth5_{band}")
+        return out
 
-    return out
-
-
-def dp1_adapter(source: pd.DataFrame, config: Mapping[str, Any]) -> pd.DataFrame:
-    return adapt_dp1_catalog(source, config)
-
-
-def adapt_clauds_sextractor_catalog(
-    source: pd.DataFrame, config: Mapping[str, Any]
-) -> pd.DataFrame:
-    """Adapt an in-memory CLAUDS SourceExtractor table to canonical columns."""
-    bands = list(config.get("bands", ["g", "r", "i", "z"]))
-    mag_kind = str(config.get("mag_kind", "APER_2s"))
-    column_map = dict(config.get("columns", {}))
-
-    out = pd.DataFrame()
-    out["object_id"] = _mapped_or_first(source, column_map, "object_id", ["ID"])
-    out["ra"] = _mapped_or_first(source, column_map, "ra", ["RA"])
-    out["dec"] = _mapped_or_first(source, column_map, "dec", ["DEC"])
-    out["field"] = config.get("field", "CLAUDS")
-    out["z_phot"] = _mapped_or_first(source, column_map, "z_phot", ["ZPHOT"])
-    out["z_phot_err"] = 0.5 * (
-        source[_mapped_name(column_map, "zpdf_u68", "ZPDF_U68")]
-        - source[_mapped_name(column_map, "zpdf_l68", "ZPDF_L68")]
-    )
-    out["is_galaxy"] = (
-        _mapped_or_first(source, column_map, "obj_type", ["OBJ_TYPE"]) == 0
-    )
-    out["mask_ok"] = _mapped_or_first(source, column_map, "mask", ["MASK"]) == 0
-    out["quality_ok"] = True
-    if "Z_SPEC" in source:
-        out["spec_z"] = source["Z_SPEC"]
-    if "MASS_MED" in source:
-        out["stellar_mass_log"] = source["MASS_MED"]
-
-    for band in bands:
-        prefix = str(config.get("band_prefix", "HSC"))
-        source_band = str(config.get("band_map", {}).get(band, band))
-        stem = f"{prefix}_{source_band}_MAG_{mag_kind}"
-        err_stem = f"{prefix}_{source_band}_MAGERR_{mag_kind}"
-        _copy_first_existing(
-            source,
-            out,
-            [column_map.get(f"mag_{band}", stem), stem, source_band, band],
-            f"mag_{band}",
-        )
-        _copy_first_existing(
-            source,
-            out,
-            [column_map.get(f"magerr_{band}", err_stem), err_stem],
-            f"magerr_{band}",
+    @staticmethod
+    def photoz_sigma(
+        source: pd.DataFrame,
+        estimate: Mapping[str, Any],
+    ) -> np.ndarray:
+        if "err" in estimate:
+            err_col = str(estimate["err"])
+            if err_col not in source:
+                raise ValueError(f"Photo-z error column is missing: {err_col}")
+            return source[err_col].to_numpy(float)
+        low_col = str(estimate["err_low"])
+        high_col = str(estimate["err_high"])
+        missing = [col for col in (low_col, high_col) if col not in source]
+        if missing:
+            raise ValueError(f"Photo-z interval columns are missing: {missing}")
+        return 0.5 * (
+            source[high_col].to_numpy(float) - source[low_col].to_numpy(float)
         )
 
-    offset = f"OFFSET_MAG_{mag_kind.split('_')[-1]}"
-    if bool(config.get("apply_aperture_offset", False)) and offset in source:
+    @staticmethod
+    def photoz_label(z_col: str) -> str:
+        label = z_col
+        for suffix in ("_z_mode", "_z_median", "_z_mean", "_z"):
+            if label.endswith(suffix):
+                label = label[: -len(suffix)]
+                break
+        label = re.sub(r"[^0-9a-zA-Z]+", "_", label).strip("_").lower()
+        return label or "estimate"
+
+
+class DP1CatalogAdapter(CatalogAdapter):
+    """Adapt assembled Rubin DP1 tables into the canonical schema."""
+
+    auxiliary_flux_types = ("cModel",)
+
+    def adapt(self, source: pd.DataFrame) -> pd.DataFrame:
+        source = self.with_photoz_columns(source)
+        bands = _catalog_bands(self.config)
+        flux_type = str(self.config.get("flux_type", "gaap1p0"))
+        photometry = self.config.get("photometry")
+
+        out = pd.DataFrame()
+        out["object_id"] = self.mapped_or_first(
+            source, "object_id", ["object_id", "objectID", "objectId"]
+        )
+        out["ra"] = self.mapped_or_first(source, "ra", ["ra", "coord_ra", "RA"])
+        out["dec"] = self.mapped_or_first(source, "dec", ["dec", "coord_dec", "DEC"])
+        out["field"] = self.optional_column(source, "field", ["field"], "unknown")
+        out["z_phot"] = self.mapped_or_first(source, "z_phot", ["z_phot"])
+        out["z_phot_err"] = self.optional_column(
+            source,
+            "z_phot_err",
+            ["z_phot_err"],
+            np.nan,
+        )
+        if "is_galaxy" in self.column_map or "is_galaxy" in source:
+            out["is_galaxy"] = self.mapped_or_first(
+                source, "is_galaxy", ["is_galaxy"]
+            ).astype(bool)
+        elif "refExtendedness" in source:
+            threshold = float(self.config.get("extendedness_min", 0.5))
+            out["is_galaxy"] = source["refExtendedness"] > threshold
+        else:
+            out["is_galaxy"] = True
+        out["mask_ok"] = self.optional_column(
+            source,
+            "mask_ok",
+            ["mask_ok"],
+            True,
+        )
+        out["quality_ok"] = self.optional_column(
+            source,
+            "quality_ok",
+            ["quality_ok"],
+            True,
+        )
+        if "redshift" in source:
+            out["spec_z"] = source["redshift"]
+        if "confidence" in source:
+            out["spec_z_confidence"] = source["confidence"]
+        if "ebv" in source:
+            out["ebv"] = source["ebv"]
+        if "refExtendedness" in source:
+            out["ref_extendedness"] = source["refExtendedness"]
+        for col in source.columns:
+            if col.endswith("_blendedness"):
+                band = col.removesuffix("_blendedness")
+                out[f"blendedness_{band}"] = source[col]
+            if col == "z_phot_diff" or col.startswith("photoz_"):
+                out[col] = source[col]
+        if "stellar_mass_log" in source:
+            out["stellar_mass_log"] = source["stellar_mass_log"]
+        if "stellar_mass" in source:
+            out["stellar_mass_log"] = _to_log_mass(source["stellar_mass"])
+
         for band in bands:
-            col = f"mag_{band}"
-            if col in out:
-                out[col] = out[col] + source[offset]
+            if photometry in (None, "flux"):
+                self.copy_if_exists(
+                    source, out, f"{band}_{flux_type}Flux", f"flux_{band}"
+                )
+                self.copy_if_exists(
+                    source, out, f"{band}_{flux_type}FluxErr", f"fluxerr_{band}"
+                )
+            if photometry in (None, "mag"):
+                self.copy_if_exists(
+                    source, out, f"{band}_{flux_type}Mag", f"mag_{band}"
+                )
+                self.copy_if_exists(
+                    source, out, f"{band}_{flux_type}MagErr", f"magerr_{band}"
+                )
+            for aux_flux_type in self.config.get(
+                "auxiliary_flux_types",
+                self.auxiliary_flux_types,
+            ):
+                label = self.photometry_label(str(aux_flux_type))
+                self.copy_if_exists(
+                    source,
+                    out,
+                    f"{band}_{aux_flux_type}Flux",
+                    f"{label}_flux_{band}",
+                )
+                self.copy_if_exists(
+                    source,
+                    out,
+                    f"{band}_{aux_flux_type}FluxErr",
+                    f"{label}_fluxerr_{band}",
+                )
+            self.copy_if_exists(source, out, f"{band}5_pixel", f"depth5_{band}")
 
-    return out
+        return out
+
+    @staticmethod
+    def photometry_label(flux_type: str) -> str:
+        label = re.sub(r"[^0-9a-zA-Z]+", "_", flux_type).strip("_").lower()
+        return label or "aux"
 
 
-def clauds_sextractor_adapter(
-    source: pd.DataFrame,
-    config: Mapping[str, Any],
-) -> pd.DataFrame:
-    return adapt_clauds_sextractor_catalog(source, config)
+class ClaudsSExtractorCatalogAdapter(CatalogAdapter):
+    """Adapt CLAUDS/HSC SourceExtractor catalogs into the canonical schema."""
+
+    def adapt(self, source: pd.DataFrame) -> pd.DataFrame:
+        bands = list(self.config.get("bands", ["g", "r", "i", "z"]))
+        mag_kind = str(self.config.get("mag_kind", "APER_2s"))
+
+        out = pd.DataFrame()
+        out["object_id"] = self.mapped_or_first(source, "object_id", ["ID"])
+        out["ra"] = self.mapped_or_first(source, "ra", ["RA"])
+        out["dec"] = self.mapped_or_first(source, "dec", ["DEC"])
+        out["field"] = self.config.get("field", "CLAUDS")
+        out["z_phot"] = self.mapped_or_first(source, "z_phot", ["ZPHOT"])
+        out["z_phot_err"] = 0.5 * (
+            source[self.mapped_name("zpdf_u68", "ZPDF_U68")]
+            - source[self.mapped_name("zpdf_l68", "ZPDF_L68")]
+        )
+        out["is_galaxy"] = self.mapped_or_first(source, "obj_type", ["OBJ_TYPE"]) == 0
+        out["mask_ok"] = self.mapped_or_first(source, "mask", ["MASK"]) == 0
+        out["quality_ok"] = True
+        if "Z_SPEC" in source:
+            out["spec_z"] = source["Z_SPEC"]
+        if "MASS_MED" in source:
+            out["stellar_mass_log"] = source["MASS_MED"]
+
+        for band in bands:
+            prefix = str(self.config.get("band_prefix", "HSC"))
+            source_band = str(self.config.get("band_map", {}).get(band, band))
+            stem = f"{prefix}_{source_band}_MAG_{mag_kind}"
+            err_stem = f"{prefix}_{source_band}_MAGERR_{mag_kind}"
+            self.copy_first_existing(
+                source,
+                out,
+                [self.column_map.get(f"mag_{band}", stem), stem, source_band, band],
+                f"mag_{band}",
+            )
+            self.copy_first_existing(
+                source,
+                out,
+                [self.column_map.get(f"magerr_{band}", err_stem), err_stem],
+                f"magerr_{band}",
+            )
+
+        offset = f"OFFSET_MAG_{mag_kind.split('_')[-1]}"
+        if bool(self.config.get("apply_aperture_offset", False)) and offset in source:
+            for band in bands:
+                col = f"mag_{band}"
+                if col in out:
+                    out[col] = out[col] + source[offset]
+
+        return out
 
 
-ADAPTERS: dict[str, Callable[[pd.DataFrame, Mapping[str, Any]], pd.DataFrame]] = {
-    "dp1": dp1_adapter,
-    "clauds_sextractor": clauds_sextractor_adapter,
+ADAPTER_CLASSES: dict[str, type[CatalogAdapter]] = {
+    "dp1": DP1CatalogAdapter,
+    "clauds_sextractor": ClaudsSExtractorCatalogAdapter,
 }
+
+
+def _catalog_adapter(config: Mapping[str, Any]) -> CatalogAdapter:
+    adapter_name = str(config["adapter"])
+    try:
+        adapter_cls = ADAPTER_CLASSES[adapter_name]
+    except KeyError as exc:
+        raise ValueError(f"Unknown catalog adapter: {adapter_name}") from exc
+    return adapter_cls(config)
 
 
 def apply_extinction_correction(
@@ -315,92 +464,6 @@ def _apply_footprint_config(
     return catalog
 
 
-def _with_photoz_columns(
-    source: pd.DataFrame,
-    config: Mapping[str, Any],
-) -> pd.DataFrame:
-    photoz = config.get("photoz", {})
-    if not photoz:
-        return source
-    if not isinstance(photoz, Mapping):
-        raise ValueError("Catalog 'photoz' must be a mapping")
-
-    combine = photoz.get("combine", photoz)
-    if not isinstance(combine, Mapping) or "estimates" not in combine:
-        return source
-
-    estimates = list(combine["estimates"])
-    if len(estimates) == 0:
-        raise ValueError("photoz.combine.estimates must not be empty")
-
-    out = source.copy()
-    values = []
-    sigmas = []
-    labels = []
-    for estimate in estimates:
-        if not isinstance(estimate, Mapping):
-            raise ValueError("Each photoz estimate must be a mapping")
-        z_col = str(estimate["z"])
-        if z_col not in out:
-            raise ValueError(f"Photo-z estimate column is missing: {z_col}")
-        values.append(out[z_col].to_numpy(float))
-        sigmas.append(_photoz_sigma(out, estimate))
-        labels.append(str(estimate.get("label", _photoz_estimate_label(z_col))))
-
-    z_values = np.column_stack(values)
-    z_sigmas = np.column_stack(sigmas)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        weights = np.where(z_sigmas > 0, 1.0 / z_sigmas**2, 0.0)
-        weight_sum = np.sum(weights, axis=1)
-        z_phot = np.sum(z_values * weights, axis=1) / weight_sum
-        z_err = np.sqrt(1.0 / weight_sum)
-    bad = (weight_sum <= 0) | ~np.isfinite(z_phot) | ~np.isfinite(z_err)
-    z_phot[bad] = np.nan
-    z_err[bad] = np.nan
-
-    out[str(combine.get("z_col", "z_phot"))] = z_phot
-    out[str(combine.get("err_col", "z_phot_err"))] = z_err
-    for label, value, sigma in zip(labels, values, sigmas):
-        out[f"photoz_{label}"] = value
-        out[f"photoz_sigma_{label}"] = sigma
-    diff_col = combine.get("diff_col", "z_phot_diff")
-    if diff_col:
-        out[str(diff_col)] = np.nanmax(z_values, axis=1) - np.nanmin(z_values, axis=1)
-    return out
-
-
-def _photoz_sigma(
-    source: pd.DataFrame,
-    estimate: Mapping[str, Any],
-) -> np.ndarray:
-    if "err" in estimate:
-        err_col = str(estimate["err"])
-        if err_col not in source:
-            raise ValueError(f"Photo-z error column is missing: {err_col}")
-        return source[err_col].to_numpy(float)
-    low_col = str(estimate["err_low"])
-    high_col = str(estimate["err_high"])
-    missing = [col for col in (low_col, high_col) if col not in source]
-    if missing:
-        raise ValueError(f"Photo-z interval columns are missing: {missing}")
-    return 0.5 * (source[high_col].to_numpy(float) - source[low_col].to_numpy(float))
-
-
-def _photoz_estimate_label(z_col: str) -> str:
-    label = z_col
-    for suffix in ("_z_mode", "_z_median", "_z_mean", "_z"):
-        if label.endswith(suffix):
-            label = label[: -len(suffix)]
-            break
-    label = re.sub(r"[^0-9a-zA-Z]+", "_", label).strip("_").lower()
-    return label or "estimate"
-
-
-def _photometry_label(flux_type: str) -> str:
-    label = re.sub(r"[^0-9a-zA-Z]+", "_", flux_type).strip("_").lower()
-    return label or "aux"
-
-
 def _catalog_bands(config: Mapping[str, Any]) -> list[str]:
     bands: list[str] = []
     for key in ("bands", "extra_bands", "optional_bands"):
@@ -411,7 +474,6 @@ def _catalog_bands(config: Mapping[str, Any]) -> list[str]:
         kcorrect = enrichments.get("kcorrect", {})
         if isinstance(kcorrect, Mapping):
             bands.extend(str(band) for band in kcorrect.get("response_bands", []))
-            bands.extend(str(band) for band in kcorrect.get("bands", []))
 
     extinction = config.get("extinction", {})
     if isinstance(extinction, Mapping):
@@ -424,59 +486,6 @@ def _catalog_bands(config: Mapping[str, Any]) -> list[str]:
             unique.append(band)
             seen.add(band)
     return unique
-
-
-def _first_existing(source: pd.DataFrame, names: list[str]) -> pd.Series:
-    for name in names:
-        if name in source:
-            return source[name]
-    raise ValueError(f"None of these columns exist: {names}")
-
-
-def _mapped_name(column_map: Mapping[str, str], logical_name: str, default: str) -> str:
-    return str(column_map.get(logical_name, default))
-
-
-def _mapped_or_first(
-    source: pd.DataFrame,
-    column_map: Mapping[str, str],
-    logical_name: str,
-    defaults: list[str],
-) -> pd.Series:
-    names = [_mapped_name(column_map, logical_name, defaults[0]), *defaults]
-    return _first_existing(source, names)
-
-
-def _optional_column(
-    source: pd.DataFrame,
-    column_map: Mapping[str, str],
-    logical_name: str,
-    defaults: list[str],
-    default: Any,
-) -> Any:
-    try:
-        return _mapped_or_first(source, column_map, logical_name, defaults)
-    except ValueError:
-        return default
-
-
-def _copy_if_exists(
-    source: pd.DataFrame, target: pd.DataFrame, source_col: str, target_col: str
-) -> None:
-    if source_col in source:
-        target[target_col] = source[source_col]
-
-
-def _copy_first_existing(
-    source: pd.DataFrame,
-    target: pd.DataFrame,
-    source_cols: list[str],
-    target_col: str,
-) -> None:
-    for col in source_cols:
-        if col in source:
-            target[target_col] = source[col]
-            return
 
 
 def _to_log_mass(value: pd.Series) -> pd.Series:

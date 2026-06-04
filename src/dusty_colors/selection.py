@@ -15,6 +15,76 @@ from .footprint import assign_jackknife_regions
 MAGSYS_ZEROPOINT = 31.4
 
 
+class SampleSelector:
+    """Select foreground/background samples from one canonical catalog.
+
+    The order mirrors the analysis logic in the sample YAML: start from valid
+    catalog rows, apply cuts shared by both samples, then make foreground and
+    background samples with their own optional cleaning.
+    """
+
+    def __init__(
+        self,
+        catalog: pd.DataFrame,
+        config: Mapping[str, Any],
+        *,
+        bands: list[str] | None = None,
+        photometry: str | None = None,
+    ) -> None:
+        self.catalog = catalog
+        self.config = config
+        self.selection = dict(config.get("selection", {}))
+        self.cleaning = dict(config.get("cleaning", {}))
+        self.bands = bands
+        self.photometry = photometry
+
+    def select(self) -> dict[str, pd.DataFrame]:
+        selected = self._valid_catalog_rows()
+        selected = self._apply_shared_selection(selected)
+        selected = self._assign_jackknife(selected)
+        footprint = self._footprint(selected)
+
+        foreground = self._sample(selected, "foreground")
+        background = self._sample(selected, "background")
+        if len(foreground) == 0 or len(background) == 0:
+            raise ValueError("Foreground and background samples must both be non-empty")
+
+        samples = {"foreground": foreground, "background": background}
+        if footprint is not None:
+            samples["footprint"] = footprint
+        return samples
+
+    def _valid_catalog_rows(self) -> pd.DataFrame:
+        return apply_minimal_cleaning(
+            self.catalog,
+            bands=self.bands,
+            photometry=self.photometry,
+        )
+
+    def _apply_shared_selection(self, catalog: pd.DataFrame) -> pd.DataFrame:
+        mask = SharedSelectionCuts(catalog, self.selection).mask()
+        return catalog.loc[mask].reset_index(drop=True)
+
+    def _assign_jackknife(self, catalog: pd.DataFrame) -> pd.DataFrame:
+        jackknife = _enabled_option(self.config, "jackknife")
+        if jackknife is None:
+            return catalog
+        return _assign_sample_jackknife(catalog, jackknife)
+
+    def _footprint(self, catalog: pd.DataFrame) -> pd.DataFrame | None:
+        return _sample_footprint(catalog, self.config.get("footprint"))
+
+    def _sample(self, catalog: pd.DataFrame, sample: str) -> pd.DataFrame:
+        sample_catalog = _redshift_slice(catalog, self.selection[f"{sample}_z"])
+        query = self.selection.get(f"{sample}_query")
+        if query:
+            sample_catalog = sample_catalog.query(str(query)).reset_index(drop=True)
+        return clean_sample(
+            sample_catalog,
+            _cleaning_for_sample(self.cleaning, sample),
+        )
+
+
 def select_samples(
     catalog: pd.DataFrame,
     config: Mapping[str, Any],
@@ -23,40 +93,12 @@ def select_samples(
     photometry: str | None = None,
 ) -> dict[str, pd.DataFrame]:
     """Return foreground/background samples from an in-memory catalog."""
-    selection = dict(config.get("selection", {}))
-    cleaning = dict(config.get("cleaning", {}))
-
-    selected = apply_minimal_cleaning(
+    return SampleSelector(
         catalog,
+        config,
         bands=bands,
         photometry=photometry,
-    )
-    selected = selected.loc[_base_mask(selected, selection)].reset_index(drop=True)
-    jackknife = _enabled_option(config, "jackknife")
-    if jackknife is not None:
-        selected = _assign_sample_jackknife(selected, jackknife)
-    footprint = _sample_footprint(selected, config.get("footprint"))
-
-    foreground = _redshift_slice(selected, selection["foreground_z"])
-    background = _redshift_slice(selected, selection["background_z"])
-
-    if selection.get("foreground_query"):
-        foreground = foreground.query(str(selection["foreground_query"])).reset_index(
-            drop=True
-        )
-    if selection.get("background_query"):
-        background = background.query(str(selection["background_query"])).reset_index(
-            drop=True
-        )
-
-    foreground = clean_sample(foreground, _cleaning_for_sample(cleaning, "foreground"))
-    background = clean_sample(background, _cleaning_for_sample(cleaning, "background"))
-    if len(foreground) == 0 or len(background) == 0:
-        raise ValueError("Foreground and background samples must both be non-empty")
-    samples = {"foreground": foreground, "background": background}
-    if footprint is not None:
-        samples["footprint"] = footprint
-    return samples
+    ).select()
 
 
 def write_sample_outputs(
@@ -92,53 +134,104 @@ def prepare_sample(
     write_sample_outputs(samples, output_dir)
 
 
-def _base_mask(catalog: pd.DataFrame, selection: Mapping[str, Any]) -> np.ndarray:
-    mask = np.ones(len(catalog), dtype=bool)
-    if selection.get("shared_query"):
+class SharedSelectionCuts:
+    """Build the mask for cuts shared by foreground and background samples."""
+
+    def __init__(
+        self,
+        catalog: pd.DataFrame,
+        selection: Mapping[str, Any],
+    ) -> None:
+        self.catalog = catalog
+        self.selection = selection
+        self.current_mask = np.ones(len(catalog), dtype=bool)
+
+    def mask(self) -> np.ndarray:
+        self._apply_shared_query()
+        self._apply_pixel_cuts()
+        self._apply_photometry_cuts()
+        self._apply_photoz_cuts()
+        return self.current_mask
+
+    def _apply_shared_query(self) -> None:
+        if not self.selection.get("shared_query"):
+            return
         query_mask = (
-            catalog.eval(str(selection["shared_query"])).astype(bool).to_numpy()
+            self.catalog.eval(str(self.selection["shared_query"]))
+            .astype(bool)
+            .to_numpy()
         )
-        mask &= query_mask
-    pixel_depth_cuts = _enabled_option(selection, "pixel_depth_cuts")
-    if pixel_depth_cuts is not None:
-        mask &= _pixel_depth_cut_mask(catalog, pixel_depth_cuts, mask)
-    pixel_occupancy_min = _enabled_option(selection, "pixel_occupancy_min")
-    if pixel_occupancy_min is not None:
-        mask &= _pixel_occupancy_mask(catalog, pixel_occupancy_min, mask)
-    snr_min = _enabled_option(selection, "snr_min")
-    if snr_min is not None:
-        mask &= _snr_min_mask(catalog, snr_min)
-    blendedness_max = _enabled_option(selection, "blendedness_max")
-    if blendedness_max is not None:
-        mask &= _max_column_mask(
-            catalog,
-            blendedness_max,
-            default_column="blendedness_i",
-            option_name="blendedness_max",
+        self.current_mask &= query_mask
+
+    def _apply_pixel_cuts(self) -> None:
+        pixel_depth_cuts = _enabled_option(self.selection, "pixel_depth_cuts")
+        if pixel_depth_cuts is not None:
+            self.current_mask &= _pixel_depth_cut_mask(
+                self.catalog,
+                pixel_depth_cuts,
+                self.current_mask,
+            )
+
+        pixel_occupancy_min = _enabled_option(
+            self.selection,
+            "pixel_occupancy_min",
         )
-    magnitude_limits = _enabled_option(
-        selection,
-        "magnitude_limits",
-        fallback_name="magnitude_limit",
-    )
-    if magnitude_limits is not None:
-        mask &= _magnitude_limit_mask(catalog, magnitude_limits)
-    if "photoz_max_sigma" in selection:
-        mask &= catalog["z_phot_err"].to_numpy(float) < float(
-            selection["photoz_max_sigma"]
+        if pixel_occupancy_min is not None:
+            self.current_mask &= _pixel_occupancy_mask(
+                self.catalog,
+                pixel_occupancy_min,
+                self.current_mask,
+            )
+
+    def _apply_photometry_cuts(self) -> None:
+        snr_min = _enabled_option(self.selection, "snr_min")
+        if snr_min is not None:
+            self.current_mask &= _snr_min_mask(self.catalog, snr_min)
+
+        blendedness_max = _enabled_option(self.selection, "blendedness_max")
+        if blendedness_max is not None:
+            self.current_mask &= _max_column_mask(
+                self.catalog,
+                blendedness_max,
+                default_column="blendedness_i",
+                option_name="blendedness_max",
+            )
+
+        magnitude_limits = _enabled_option(self.selection, "magnitude_limits")
+        if magnitude_limits is not None:
+            self.current_mask &= _magnitude_limit_mask(
+                self.catalog,
+                magnitude_limits,
+            )
+
+    def _apply_photoz_cuts(self) -> None:
+        if "photoz_max_sigma" in self.selection:
+            self.current_mask &= self.catalog["z_phot_err"].to_numpy(float) < float(
+                self.selection["photoz_max_sigma"]
+            )
+
+        photoz_estimate_sigma = _enabled_option(
+            self.selection,
+            "photoz_estimate_max_sigma",
         )
-    photoz_estimate_sigma = _enabled_option(selection, "photoz_estimate_max_sigma")
-    if photoz_estimate_sigma is not None:
-        mask &= _photoz_estimate_sigma_mask(catalog, photoz_estimate_sigma)
-    photoz_diff_norm = _enabled_option(selection, "photoz_max_diff_norm")
-    if photoz_diff_norm is not None:
-        mask &= _photoz_diff_norm_mask(catalog, photoz_diff_norm)
-    if "photoz_max_sigma_norm" in selection:
-        max_sigma = float(selection["photoz_max_sigma_norm"])
-        mask &= catalog["z_phot_err"].to_numpy(float) < max_sigma * (
-            1.0 + catalog["z_phot"].to_numpy(float)
-        )
-    return mask
+        if photoz_estimate_sigma is not None:
+            self.current_mask &= _photoz_estimate_sigma_mask(
+                self.catalog,
+                photoz_estimate_sigma,
+            )
+
+        photoz_diff_norm = _enabled_option(self.selection, "photoz_max_diff_norm")
+        if photoz_diff_norm is not None:
+            self.current_mask &= _photoz_diff_norm_mask(
+                self.catalog,
+                photoz_diff_norm,
+            )
+
+        if "photoz_max_sigma_norm" in self.selection:
+            max_sigma = float(self.selection["photoz_max_sigma_norm"])
+            self.current_mask &= self.catalog["z_phot_err"].to_numpy(
+                float
+            ) < max_sigma * (1.0 + self.catalog["z_phot"].to_numpy(float))
 
 
 def _redshift_slice(catalog: pd.DataFrame, bounds: list[float]) -> pd.DataFrame:
@@ -152,12 +245,8 @@ def _redshift_slice(catalog: pd.DataFrame, bounds: list[float]) -> pd.DataFrame:
 def _enabled_option(
     config: Mapping[str, Any],
     name: str,
-    *,
-    fallback_name: str | None = None,
 ) -> Any:
     value = config.get(name)
-    if value is None and fallback_name is not None:
-        value = config.get(fallback_name)
     if value is None or value is False:
         return None
     if isinstance(value, Mapping) and not bool(value.get("enabled", True)):
@@ -274,7 +363,7 @@ def _snr_min_mask(catalog: pd.DataFrame, config: Any) -> np.ndarray:
         raise ValueError("selection.snr_min must be a mapping")
     flux_template = str(config.get("flux_template", "flux_{band}"))
     fluxerr_template = str(config.get("fluxerr_template", "fluxerr_{band}"))
-    bands = config.get("bands", config.get("values"))
+    bands = config.get("bands")
     if not isinstance(bands, Mapping):
         raise ValueError("selection.snr_min.bands must map band names to thresholds")
 
@@ -316,41 +405,55 @@ def _pixel_occupancy_mask(
     return pixels.isin(accepted).to_numpy()
 
 
-def _pixel_depth_cut_mask(
-    catalog: pd.DataFrame,
-    config: Any,
-    current_mask: np.ndarray,
-) -> np.ndarray:
-    if not isinstance(config, Mapping):
-        raise ValueError("selection.pixel_depth_cuts must be a mapping")
+class PixelDepthCuts:
+    """Apply depth cuts that are measured per HEALPix footprint pixel."""
 
-    pixel_col = str(config.get("pixel_col", "pixel"))
-    if pixel_col not in catalog:
-        raise ValueError(f"Pixel depth cuts requested missing column: {pixel_col}")
-    fluxerr_template = str(config.get("fluxerr_template", "fluxerr_{band}"))
-    depth_sigma = float(config.get("depth_sigma", 10.0))
-    if depth_sigma <= 0:
-        raise ValueError("selection.pixel_depth_cuts.depth_sigma must be positive")
-    aggregate = str(config.get("aggregate", "median"))
-    if aggregate != "median":
-        raise ValueError("selection.pixel_depth_cuts.aggregate must be 'median'")
-
-    depth_cache: dict[str, np.ndarray] = {}
-
-    def depth_for(band: str, mask_for_depths: np.ndarray) -> np.ndarray:
-        if band not in depth_cache:
-            depth_cache[band] = _pixel_depth_values(
-                catalog,
-                pixel_col=pixel_col,
-                fluxerr_col=fluxerr_template.format(band=band),
-                depth_sigma=depth_sigma,
-                rows_mask=mask_for_depths,
+    def __init__(
+        self,
+        catalog: pd.DataFrame,
+        config: Mapping[str, Any],
+        current_mask: np.ndarray,
+    ) -> None:
+        self.catalog = catalog
+        self.config = config
+        self.current_mask = current_mask
+        self.pixel_col = str(config.get("pixel_col", "pixel"))
+        if self.pixel_col not in catalog:
+            raise ValueError(
+                f"Pixel depth cuts requested missing column: {self.pixel_col}"
             )
-        return depth_cache[band]
+        self.fluxerr_template = str(config.get("fluxerr_template", "fluxerr_{band}"))
+        self.depth_sigma = float(config.get("depth_sigma", 10.0))
+        if self.depth_sigma <= 0:
+            raise ValueError("selection.pixel_depth_cuts.depth_sigma must be positive")
+        aggregate = str(config.get("aggregate", "median"))
+        if aggregate != "median":
+            raise ValueError("selection.pixel_depth_cuts.aggregate must be 'median'")
+        self._depth_cache: dict[str, np.ndarray] = {}
 
-    mask = current_mask.copy()
-    valid_range = config.get("valid_range")
-    if valid_range:
+    def mask(self) -> np.ndarray:
+        mask = self.current_mask.copy()
+        mask = self._apply_valid_range(mask)
+        mask = self._apply_min_occupancy(mask)
+        mask = self._apply_completeness(mask)
+        mask = self._drop_shallowest_pixels(mask)
+        return mask
+
+    def depth_for(self, band: str) -> np.ndarray:
+        if band not in self._depth_cache:
+            self._depth_cache[band] = _pixel_depth_values(
+                self.catalog,
+                pixel_col=self.pixel_col,
+                fluxerr_col=self.fluxerr_template.format(band=band),
+                depth_sigma=self.depth_sigma,
+                rows_mask=self.current_mask,
+            )
+        return self._depth_cache[band]
+
+    def _apply_valid_range(self, mask: np.ndarray) -> np.ndarray:
+        valid_range = self.config.get("valid_range")
+        if not valid_range:
+            return mask
         if not isinstance(valid_range, Mapping):
             raise ValueError("selection.pixel_depth_cuts.valid_range must be a mapping")
         bands = [str(band) for band in valid_range.get("bands", [])]
@@ -359,22 +462,27 @@ def _pixel_depth_cut_mask(
         lo = valid_range.get("min")
         hi = valid_range.get("max")
         for band in bands:
-            depth = depth_for(band, current_mask)
+            depth = self.depth_for(band)
             if lo is not None:
                 mask &= depth > float(lo)
             if hi is not None:
                 mask &= depth < float(hi)
+        return mask
 
-    occupancy = config.get("min_occupancy", config.get("pixel_occupancy_min"))
-    if occupancy is not None:
-        mask &= _pixel_occupancy_mask(
-            catalog,
-            {"pixel_col": pixel_col, "value": occupancy},
+    def _apply_min_occupancy(self, mask: np.ndarray) -> np.ndarray:
+        occupancy = self.config.get("min_occupancy")
+        if occupancy is None:
+            return mask
+        return mask & _pixel_occupancy_mask(
+            self.catalog,
+            {"pixel_col": self.pixel_col, "value": occupancy},
             mask,
         )
 
-    complete_to = config.get("complete_to")
-    if complete_to:
+    def _apply_completeness(self, mask: np.ndarray) -> np.ndarray:
+        complete_to = self.config.get("complete_to")
+        if not complete_to:
+            return mask
         complete_configs = (
             complete_to if isinstance(complete_to, list) else [complete_to]
         )
@@ -388,10 +496,13 @@ def _pixel_depth_cut_mask(
                 raise ValueError("pixel_depth_cuts.complete_to.band is required")
             if "magnitude" not in item:
                 raise ValueError("pixel_depth_cuts.complete_to.magnitude is required")
-            mask &= depth_for(band, current_mask) > float(item["magnitude"])
+            mask &= self.depth_for(band) > float(item["magnitude"])
+        return mask
 
-    drop_shallowest = config.get("drop_shallowest")
-    if drop_shallowest:
+    def _drop_shallowest_pixels(self, mask: np.ndarray) -> np.ndarray:
+        drop_shallowest = self.config.get("drop_shallowest")
+        if not drop_shallowest:
+            return mask
         if not isinstance(drop_shallowest, Mapping):
             raise ValueError(
                 "selection.pixel_depth_cuts.drop_shallowest must be a mapping"
@@ -408,16 +519,25 @@ def _pixel_depth_cut_mask(
             )
         unique = bool(drop_shallowest.get("unique_pixels", True))
         for band in bands:
-            depth = depth_for(band, current_mask)
+            depth = self.depth_for(band)
             values = depth[mask & np.isfinite(depth)]
             if unique:
                 values = np.unique(values)
             if len(values) == 0:
-                return np.zeros(len(catalog), dtype=bool)
+                return np.zeros(len(self.catalog), dtype=bool)
             threshold = float(np.nanquantile(values, q))
             mask &= depth > threshold
+        return mask
 
-    return mask
+
+def _pixel_depth_cut_mask(
+    catalog: pd.DataFrame,
+    config: Any,
+    current_mask: np.ndarray,
+) -> np.ndarray:
+    if not isinstance(config, Mapping):
+        raise ValueError("selection.pixel_depth_cuts must be a mapping")
+    return PixelDepthCuts(catalog, config, current_mask).mask()
 
 
 def _pixel_depth_values(

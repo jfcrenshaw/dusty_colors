@@ -75,7 +75,7 @@ Useful catalog options:
   `photoz_sigma_<label>` diagnostic column for stricter sample cuts.
 - `extinction`: `enabled`, `ebv_column`, `bands`, and per-band `coefficients`.
 - `enrichments`: `kcorrect` and `halo_mass`, each with `enabled`. `kcorrect`
-  accepts `model`/`filename` or `responses`, plus `responses_out`,
+  accepts `model` or `responses`, plus `responses_out`,
   `responses_map`, `redshift_range`, `nredshift`, `abcorrect`,
   `interpolate_templates`, `response_bands`, `absmag_bands`, `redshift_col`,
   `min_redshift`, `max_redshift`, `error_floor`, `stellar_mass_col`, and
@@ -92,7 +92,7 @@ write `foreground.parquet` and `background.parquet`.
 
 Selection options include `foreground_z`, `background_z`, `photoz_max_sigma`,
 `photoz_max_sigma_norm`, `photoz_estimate_max_sigma`, `photoz_max_diff_norm`,
-`blendedness_max`, `magnitude_limit`/`magnitude_limits`, `shared_query`,
+`blendedness_max`, `magnitude_limits`, `shared_query`,
 `foreground_query`, and `background_query`. `pixel_depth_cuts` computes
 per-pixel limiting magnitudes from `fluxerr_template` using `depth_sigma`, then
 applies `valid_range`, `min_occupancy`, `complete_to`, and
@@ -108,7 +108,7 @@ Cleaning can be configured globally or separately for `foreground` and
 `background`. The cleaning block can use `finite_columns`, `robust_clip`,
 `redshift_trend`, `column_redshift_trend`, `isolation_forest`, and
 `column_isolation_forest`. `robust_clip` accepts `columns` and `sigma`.
-`redshift_trend` accepts `columns`, `redshift_col`/`redshift_column`,
+`redshift_trend` accepts `columns`, `redshift_col`,
 polynomial `degree`, `output_suffix`, `trend_suffix`, and `center`; it adds
 derived trend and trend-removed columns. `column_redshift_trend` applies
 binned-median redshift detrending to selected columns and can either write
