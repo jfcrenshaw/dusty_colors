@@ -16,5 +16,10 @@ selection:
   shared_query: null
   foreground_query: null
   background_query: null
+footprint:
+  enabled: true
+  columns: [ra, dec, field, pixel, jackknife_region]
+jackknife:
+  regions_per_field: 3
 cleaning:
   enabled: false

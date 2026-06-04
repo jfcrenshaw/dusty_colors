@@ -14,12 +14,10 @@ from .enrichments import apply_enrichments
 from .footprint import (
     assign_fields,
     assign_healpix_pixels,
-    assign_jackknife_regions,
     footprint_table,
 )
 from .sources import assemble_sources
 
-MAGSYS_ZEROPOINT = 31.4
 DEFAULT_AUXILIARY_FLUX_TYPES = ("cModel", "free_cModel")
 
 REQUIRED_COLUMNS = {
@@ -314,128 +312,7 @@ def _apply_footprint_config(
         )
     if "nside" in footprint:
         catalog = assign_healpix_pixels(catalog, nside=int(footprint["nside"]))
-    catalog = _apply_footprint_depth_cuts(catalog, footprint)
-    jackknife = dict(config.get("jackknife", {}))
-    if jackknife and "regions_per_field" in jackknife:
-        catalog = assign_jackknife_regions(
-            catalog,
-            regions_per_field=int(jackknife["regions_per_field"]),
-        )
     return catalog
-
-
-def _apply_footprint_depth_cuts(
-    catalog: pd.DataFrame,
-    footprint_config: Mapping[str, Any],
-) -> pd.DataFrame:
-    depth_config = footprint_config.get(
-        "depth_cuts",
-        footprint_config.get("depth_cut"),
-    )
-    if not depth_config:
-        return catalog
-    if not isinstance(depth_config, Mapping):
-        raise ValueError("footprint.depth_cuts must be a mapping")
-    if not bool(depth_config.get("enabled", True)):
-        return catalog
-    if "pixel" not in catalog:
-        raise ValueError("footprint.depth_cuts requires HEALPix 'pixel' column")
-
-    bands = [str(band) for band in depth_config.get("bands", [])]
-    if not bands:
-        bands = _infer_depth_bands(
-            catalog, str(depth_config.get("fluxerr_template", ""))
-        )
-    if not bands:
-        raise ValueError("footprint.depth_cuts needs a non-empty 'bands' list")
-
-    pixel_col = str(depth_config.get("pixel_col", "pixel"))
-    if pixel_col not in catalog:
-        raise ValueError(f"footprint.depth_cuts missing pixel column: {pixel_col}")
-
-    fluxerr_template = str(
-        depth_config.get("fluxerr_template", "cmodel_fluxerr_{band}")
-    )
-    min_depth = depth_config.get("min_depth", {})
-    if min_depth is None:
-        min_depth = {}
-    if not isinstance(min_depth, Mapping):
-        raise ValueError("footprint.depth_cuts.min_depth must be a mapping")
-    shallow_fraction = float(depth_config.get("drop_shallow_fraction", 0.0))
-    if not 0.0 <= shallow_fraction < 1.0:
-        raise ValueError("footprint.depth_cuts.drop_shallow_fraction must be in [0, 1)")
-
-    accepted = set(catalog[pixel_col].dropna().astype(int).unique().tolist())
-    depths_by_band = {
-        band: _pixel_depths(catalog, pixel_col, fluxerr_template.format(band=band))
-        for band in bands
-    }
-
-    for band, threshold in min_depth.items():
-        band = str(band)
-        if band not in depths_by_band:
-            raise ValueError(f"min_depth requested band outside depth bands: {band}")
-        depths = depths_by_band[band]
-        keep = depths["depth10"].to_numpy(float) >= float(threshold)
-        accepted &= set(depths.loc[keep, pixel_col].astype(int).tolist())
-
-    if shallow_fraction > 0:
-        for band in bands:
-            depths = depths_by_band[band]
-            in_current = depths[pixel_col].astype(int).isin(accepted)
-            current_depths = depths.loc[in_current, "depth10"].to_numpy(float)
-            current_depths = current_depths[np.isfinite(current_depths)]
-            if len(current_depths) == 0:
-                accepted = set()
-                break
-            threshold = float(np.nanquantile(current_depths, shallow_fraction))
-            keep = in_current & (depths["depth10"].to_numpy(float) >= threshold)
-            accepted &= set(depths.loc[keep, pixel_col].astype(int).tolist())
-
-    if not accepted:
-        raise ValueError("footprint.depth_cuts removed every footprint pixel")
-
-    keep_rows = catalog[pixel_col].astype(int).isin(accepted).to_numpy()
-    return catalog.loc[keep_rows].reset_index(drop=True)
-
-
-def _pixel_depths(
-    catalog: pd.DataFrame,
-    pixel_col: str,
-    fluxerr_col: str,
-) -> pd.DataFrame:
-    if fluxerr_col not in catalog:
-        raise ValueError(
-            f"Depth cut requested missing flux-error column: {fluxerr_col}"
-        )
-    fluxerr = catalog[fluxerr_col].to_numpy(float)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        depth10 = MAGSYS_ZEROPOINT - 2.5 * np.log10(10.0 * fluxerr)
-    depth10[~np.isfinite(depth10) | (fluxerr <= 0)] = np.nan
-    data = pd.DataFrame(
-        {
-            pixel_col: catalog[pixel_col].to_numpy(int),
-            "depth10": depth10,
-        }
-    )
-    out = data.groupby(pixel_col, as_index=False)["depth10"].median()
-    out = out[np.isfinite(out["depth10"].to_numpy(float))].reset_index(drop=True)
-    return out
-
-
-def _infer_depth_bands(catalog: pd.DataFrame, template: str) -> list[str]:
-    if not template:
-        template = "cmodel_fluxerr_{band}"
-    if "{band}" not in template:
-        return []
-    pattern = re.escape(template).replace(r"\{band\}", r"(?P<band>[^_]+)")
-    regex = re.compile(f"^{pattern}$")
-    bands = []
-    for col in catalog.columns:
-        match = regex.match(col)
-        if match:
-            bands.append(match.group("band"))
-    return sorted(bands)
 
 
 def _with_photoz_columns(

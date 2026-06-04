@@ -68,13 +68,6 @@ enrichments:
     r200_col: r200_mpc
 footprint:
   nside: 1024
-  depth_cuts:
-    enabled: true
-    bands: [g, r, i, z]
-    fluxerr_template: cmodel_fluxerr_{band}
-    min_depth:
-      r: 24.0
-    drop_shallow_fraction: 0.05
   fields:
     ECDFS: {ra: 53.13, dec: -28.10}
     EDFS: {ra: 59.10, dec: -48.73}

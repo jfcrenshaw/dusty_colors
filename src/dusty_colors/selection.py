@@ -327,11 +327,13 @@ def _pixel_depth_cut_mask(
     pixel_col = str(config.get("pixel_col", "pixel"))
     if pixel_col not in catalog:
         raise ValueError(f"Pixel depth cuts requested missing column: {pixel_col}")
-    depth_template = config.get("depth_template", config.get("depth_col_template"))
     fluxerr_template = str(config.get("fluxerr_template", "fluxerr_{band}"))
-    sigma = float(config.get("sigma", config.get("depth_sigma", 5.0)))
-    if sigma <= 0:
-        raise ValueError("selection.pixel_depth_cuts.sigma must be positive")
+    depth_sigma = float(config.get("depth_sigma", 10.0))
+    if depth_sigma <= 0:
+        raise ValueError("selection.pixel_depth_cuts.depth_sigma must be positive")
+    aggregate = str(config.get("aggregate", "median"))
+    if aggregate != "median":
+        raise ValueError("selection.pixel_depth_cuts.aggregate must be 'median'")
 
     depth_cache: dict[str, np.ndarray] = {}
 
@@ -340,31 +342,22 @@ def _pixel_depth_cut_mask(
             depth_cache[band] = _pixel_depth_values(
                 catalog,
                 pixel_col=pixel_col,
-                depth_col=(
-                    None
-                    if depth_template is None
-                    else str(depth_template).format(band=band)
-                ),
-                fluxerr_col=(
-                    None
-                    if depth_template is not None
-                    else fluxerr_template.format(band=band)
-                ),
-                sigma=sigma,
+                fluxerr_col=fluxerr_template.format(band=band),
+                depth_sigma=depth_sigma,
                 rows_mask=mask_for_depths,
             )
         return depth_cache[band]
 
     mask = current_mask.copy()
-    window = config.get("window", config.get("valid_range"))
-    if window:
-        if not isinstance(window, Mapping):
-            raise ValueError("selection.pixel_depth_cuts.window must be a mapping")
-        bands = [str(band) for band in window.get("bands", [])]
+    valid_range = config.get("valid_range")
+    if valid_range:
+        if not isinstance(valid_range, Mapping):
+            raise ValueError("selection.pixel_depth_cuts.valid_range must be a mapping")
+        bands = [str(band) for band in valid_range.get("bands", [])]
         if not bands:
-            raise ValueError("selection.pixel_depth_cuts.window.bands is required")
-        lo = window.get("min")
-        hi = window.get("max")
+            raise ValueError("selection.pixel_depth_cuts.valid_range.bands is required")
+        lo = valid_range.get("min")
+        hi = valid_range.get("max")
         for band in bands:
             depth = depth_for(band, current_mask)
             if lo is not None:
@@ -380,30 +373,40 @@ def _pixel_depth_cut_mask(
             mask,
         )
 
-    min_depth = config.get("min_depth")
-    if min_depth:
-        if not isinstance(min_depth, Mapping):
-            raise ValueError("selection.pixel_depth_cuts.min_depth must be a mapping")
-        for band, threshold in min_depth.items():
-            mask &= depth_for(str(band), current_mask) > float(threshold)
+    complete_to = config.get("complete_to")
+    if complete_to:
+        complete_configs = (
+            complete_to if isinstance(complete_to, list) else [complete_to]
+        )
+        for item in complete_configs:
+            if not isinstance(item, Mapping):
+                raise ValueError(
+                    "pixel_depth_cuts.complete_to entries must be mappings"
+                )
+            band = str(item.get("band", ""))
+            if not band:
+                raise ValueError("pixel_depth_cuts.complete_to.band is required")
+            if "magnitude" not in item:
+                raise ValueError("pixel_depth_cuts.complete_to.magnitude is required")
+            mask &= depth_for(band, current_mask) > float(item["magnitude"])
 
-    quantile = config.get("quantile_min", config.get("drop_shallow_quantile"))
-    if quantile:
-        if not isinstance(quantile, Mapping):
+    drop_shallowest = config.get("drop_shallowest")
+    if drop_shallowest:
+        if not isinstance(drop_shallowest, Mapping):
             raise ValueError(
-                "selection.pixel_depth_cuts.quantile_min must be a mapping"
+                "selection.pixel_depth_cuts.drop_shallowest must be a mapping"
             )
-        bands = [str(band) for band in quantile.get("bands", [])]
+        bands = [str(band) for band in drop_shallowest.get("bands", [])]
         if not bands:
             raise ValueError(
-                "selection.pixel_depth_cuts.quantile_min.bands is required"
+                "selection.pixel_depth_cuts.drop_shallowest.bands is required"
             )
-        q = float(quantile.get("value", quantile.get("quantile", 0.05)))
+        q = float(drop_shallowest.get("fraction", 0.05))
         if not 0.0 <= q < 1.0:
             raise ValueError(
-                "selection.pixel_depth_cuts.quantile_min must be in [0, 1)"
+                "selection.pixel_depth_cuts.drop_shallowest.fraction must be in [0, 1)"
             )
-        unique = bool(quantile.get("unique", True))
+        unique = bool(drop_shallowest.get("unique_pixels", True))
         for band in bands:
             depth = depth_for(band, current_mask)
             values = depth[mask & np.isfinite(depth)]
@@ -421,24 +424,16 @@ def _pixel_depth_values(
     catalog: pd.DataFrame,
     *,
     pixel_col: str,
-    depth_col: str | None,
-    fluxerr_col: str | None,
-    sigma: float,
+    fluxerr_col: str,
+    depth_sigma: float,
     rows_mask: np.ndarray,
 ) -> np.ndarray:
-    if depth_col is not None:
-        if depth_col not in catalog:
-            raise ValueError(f"Pixel depth cut requested missing column: {depth_col}")
-        return catalog[depth_col].to_numpy(float)
-
-    if fluxerr_col is None:
-        raise ValueError("Pixel depth cut needs depth_template or fluxerr_template")
     if fluxerr_col not in catalog:
         raise ValueError(f"Pixel depth cut requested missing column: {fluxerr_col}")
 
     fluxerr = catalog[fluxerr_col].to_numpy(float)
     with np.errstate(divide="ignore", invalid="ignore"):
-        depth = MAGSYS_ZEROPOINT - 2.5 * np.log10(sigma * fluxerr)
+        depth = MAGSYS_ZEROPOINT - 2.5 * np.log10(depth_sigma * fluxerr)
     finite = rows_mask & np.isfinite(depth) & (fluxerr > 0)
     data = pd.DataFrame(
         {

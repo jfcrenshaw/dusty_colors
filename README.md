@@ -84,10 +84,6 @@ Useful catalog options:
   `stellar_mass_is_log`, `redshift_col`, `min_redshift`, `max_redshift`,
   `halo_mass_col`, `r200_col`, `log_mass_min`, and `log_mass_max`.
 - `footprint`: `fields`, `field_radius_deg`, and HEALPix `nside`.
-  `footprint.depth_cuts` can be disabled with `enabled: false`; when enabled,
-  it accepts `bands`, `fluxerr_template`, `min_depth`, and
-  `drop_shallow_fraction` to define the accepted random-catalog footprint.
-- `jackknife`: `regions_per_field` adds angular-sector jackknife regions.
 
 ### Sample selection and cleaning
 
@@ -97,24 +93,31 @@ write `foreground.parquet` and `background.parquet`.
 Selection options include `foreground_z`, `background_z`, `photoz_max_sigma`,
 `photoz_max_sigma_norm`, `photoz_estimate_max_sigma`, `photoz_max_diff_norm`,
 `blendedness_max`, `magnitude_limit`/`magnitude_limits`, `shared_query`,
-`foreground_query`, and `background_query`. Optional structured cuts can be
-turned off with `enabled: false`. Before these cuts are written, the pipeline
+`foreground_query`, and `background_query`. `pixel_depth_cuts` computes
+per-pixel limiting magnitudes from `fluxerr_template` using `depth_sigma`, then
+applies `valid_range`, `min_occupancy`, `complete_to`, and
+`drop_shallowest`; the sample footprint written after these cuts defines the
+accepted random-catalog footprint. `jackknife.regions_per_field` assigns
+angular-sector jackknife regions after sample cuts. Optional structured cuts can
+be turned off with `enabled: false`. Before these cuts are written, the pipeline
 always applies minimal validity filters: finite positions/redshifts,
 galaxy/mask/quality flags, finite requested photometry, and positive photometry
 errors.
 
-The current sample configs set `cleaning.enabled: false`, so optional configured
-cleaning is off by default. When enabled, the cleaning block can use
-`finite_columns`, `robust_clip`, `redshift_trend`, and `isolation_forest`.
-`robust_clip` accepts `columns` and `sigma`. `redshift_trend` accepts `columns`,
-`redshift_col`/`redshift_column`, polynomial `degree`, `output_suffix`,
-`trend_suffix`, and `center`; it adds derived trend and trend-removed columns.
-`isolation_forest` accepts `columns`, `contamination`, `n_estimators`,
-`max_samples`, `random_state`, `min_samples`, `drop_nonfinite`, `scale`,
-`score_col`, `label_col`, and the scikit-learn options `max_features`,
-`bootstrap`, `n_jobs`, and `warm_start`. Optional cleaning may add diagnostics or
-drop rows, but it never overwrites raw `flux_*`, `fluxerr_*`, `mag_*`, or
-`magerr_*` photometry.
+Cleaning can be configured globally or separately for `foreground` and
+`background`. The cleaning block can use `finite_columns`, `robust_clip`,
+`redshift_trend`, `column_redshift_trend`, `isolation_forest`, and
+`column_isolation_forest`. `robust_clip` accepts `columns` and `sigma`.
+`redshift_trend` accepts `columns`, `redshift_col`/`redshift_column`,
+polynomial `degree`, `output_suffix`, `trend_suffix`, and `center`; it adds
+derived trend and trend-removed columns. `column_redshift_trend` applies
+binned-median redshift detrending to selected columns and can either write
+suffixed columns or overwrite the selected columns. `isolation_forest` accepts
+`columns`, `contamination`, `n_estimators`, `max_samples`, `random_state`,
+`min_samples`, `drop_nonfinite`, `scale`, `score_col`, `label_col`, and the
+scikit-learn options `max_features`, `bootstrap`, `n_jobs`, and `warm_start`.
+`column_isolation_forest` uses the same model options but masks outliers in each
+selected column with `NaN` while preserving rows.
 
 ### TreeCorr stacking
 

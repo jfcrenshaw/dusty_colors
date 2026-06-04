@@ -194,11 +194,9 @@ class CatalogSampleSliceTest(unittest.TestCase):
             self.assertIn("photoz_sigma_lephare", catalog)
             self.assertIn("z_phot_diff", catalog)
 
-    def test_prepare_catalog_applies_configurable_depth_footprint_cut(self) -> None:
+    def test_prepare_catalog_assigns_footprint_without_sample_cuts(self) -> None:
         with TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
-            good_err = 10 ** ((31.4 - 25.0) / 2.5) / 10.0
-            shallow_err = 10 ** ((31.4 - 23.0) / 2.5) / 10.0
             objects = pd.DataFrame(
                 {
                     "objectID": [1, 2],
@@ -212,7 +210,7 @@ class CatalogSampleSliceTest(unittest.TestCase):
                     "r_gaap1p0Flux": [5.0, 10.0],
                     "r_gaap1p0FluxErr": [0.5, 1.0],
                     "r_cModelFlux": [5.0, 10.0],
-                    "r_cModelFluxErr": [good_err, shallow_err],
+                    "r_cModelFluxErr": [0.1, 100.0],
                 }
             )
             object_path = tmp_path / "objects.parquet"
@@ -228,20 +226,21 @@ class CatalogSampleSliceTest(unittest.TestCase):
                     "photometry": "flux",
                     "footprint": {
                         "nside": 1024,
-                        "depth_cuts": {
-                            "enabled": True,
-                            "bands": ["r"],
-                            "fluxerr_template": "cmodel_fluxerr_{band}",
-                            "min_depth": {"r": 24.0},
-                            "drop_shallow_fraction": 0.0,
+                        "fields": {
+                            "ECDFS": {"ra": 53.13, "dec": -28.10},
                         },
                     },
                 },
                 tmp_path / "out",
             )
             catalog = pd.read_parquet(tmp_path / "out/catalog.parquet")
+            footprint = pd.read_parquet(tmp_path / "out/footprint.parquet")
 
-            self.assertEqual(list(catalog["object_id"]), [1])
+            self.assertEqual(list(catalog["object_id"]), [1, 2])
+            self.assertIn("pixel", catalog)
+            self.assertEqual(list(catalog["field"]), ["ECDFS", "ECDFS"])
+            self.assertEqual(len(footprint), 2)
+            self.assertIn("pixel", footprint)
 
     def test_clauds_adapter_maps_source_extractor_magnitudes(self) -> None:
         raw = pd.DataFrame(
@@ -361,13 +360,13 @@ class CatalogSampleSliceTest(unittest.TestCase):
         self.assertEqual(list(samples["foreground"]["object_id"]), [1])
         self.assertEqual(list(samples["background"]["object_id"]), [5])
 
-    def test_selection_applies_legacy_depth_snr_cuts_and_writes_footprint(
+    def test_selection_applies_depth_snr_cuts_and_writes_footprint(
         self,
     ) -> None:
         def flux_from_mag(mag: float) -> float:
             return 10 ** ((31.4 - mag) / 2.5)
 
-        depth25_err = 10 ** ((31.4 - 25.0) / 2.5) / 5.0
+        depth25_err = 10 ** ((31.4 - 25.0) / 2.5) / 10.0
         catalog = pd.DataFrame(
             {
                 "object_id": [1, 2, 3, 4],
@@ -395,12 +394,12 @@ class CatalogSampleSliceTest(unittest.TestCase):
                 "foreground_z": [0.2, 0.5],
                 "background_z": [0.7, 1.4],
                 "pixel_depth_cuts": {
-                    "pixel_col": "pixel",
                     "fluxerr_template": "cmodel_fluxerr_{band}",
-                    "sigma": 5,
-                    "window": {"bands": ["g"], "min": 20.0, "max": 30.0},
+                    "depth_sigma": 10,
+                    "aggregate": "median",
+                    "valid_range": {"bands": ["g"], "min": 20.0, "max": 30.0},
                     "min_occupancy": 2,
-                    "min_depth": {"g": 24.0},
+                    "complete_to": {"band": "g", "magnitude": 24.0},
                 },
                 "snr_min": {
                     "flux_template": "cmodel_flux_{band}",
@@ -537,50 +536,6 @@ class CatalogSampleSliceTest(unittest.TestCase):
         cleaned = clean_sample(catalog, config)
 
         pd.testing.assert_frame_equal(cleaned, catalog)
-
-    def test_sample_specific_legacy_cleaning_can_target_background_only(self) -> None:
-        catalog = pd.DataFrame(
-            {
-                "object_id": [1, 2],
-                "ra": [1.0, 2.0],
-                "dec": [0.0, 0.0],
-                "field": ["A", "A"],
-                "z_phot": [0.3, 0.9],
-                "z_phot_err": [0.03, 0.03],
-                "is_galaxy": [True, True],
-                "mask_ok": [True, True],
-                "quality_ok": [True, True],
-                "flux_g": [10.0, 20.0],
-                "fluxerr_g": [1.0, 1.0],
-                "flux_r": [5.0, 10.0],
-                "fluxerr_r": [0.5, 0.5],
-            }
-        )
-        config = {
-            "selection": {
-                "foreground_z": [0.2, 0.5],
-                "background_z": [0.7, 1.4],
-            },
-            "cleaning": {
-                "foreground": {"enabled": False},
-                "background": {
-                    "enabled": True,
-                    "legacy_photometry": {
-                        "enabled": True,
-                        "colors": ["g-r"],
-                        "modes": ["mcolors"],
-                        "columns": ["mcolor_g_r"],
-                        "ztrends": False,
-                        "outliers": False,
-                    },
-                },
-            },
-        }
-
-        samples = select_samples(catalog, config, bands=["g", "r"], photometry="flux")
-
-        self.assertNotIn("mcolor_g_r", samples["foreground"])
-        self.assertIn("mcolor_g_r", samples["background"])
 
     @unittest.skipUnless(SKLEARN_AVAILABLE, "scikit-learn is not installed")
     def test_isolation_forest_cleaning_removes_outlier_deterministically(self) -> None:
