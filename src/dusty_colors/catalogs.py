@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,9 @@ from .footprint import (
 )
 from .sources import assemble_sources
 
+MAGSYS_ZEROPOINT = 31.4
+DEFAULT_AUXILIARY_FLUX_TYPES = ("cModel", "free_cModel")
+
 REQUIRED_COLUMNS = {
     "object_id",
     "ra",
@@ -29,6 +33,7 @@ REQUIRED_COLUMNS = {
     "mask_ok",
     "quality_ok",
 }
+
 
 def prepare_catalog(config: Mapping[str, Any], output_dir: str | Path) -> None:
     """Prepare and write a canonical catalog plus footprint table."""
@@ -141,6 +146,14 @@ def adapt_dp1_catalog(source: pd.DataFrame, config: Mapping[str, Any]) -> pd.Dat
         out["spec_z_confidence"] = source["confidence"]
     if "ebv" in source:
         out["ebv"] = source["ebv"]
+    if "refExtendedness" in source:
+        out["ref_extendedness"] = source["refExtendedness"]
+    for col in source.columns:
+        if col.endswith("_blendedness"):
+            band = col.removesuffix("_blendedness")
+            out[f"blendedness_{band}"] = source[col]
+        if col == "z_phot_diff" or col.startswith("photoz_"):
+            out[col] = source[col]
     if "stellar_mass_log" in source:
         out["stellar_mass_log"] = source["stellar_mass_log"]
     if "stellar_mass" in source:
@@ -154,8 +167,23 @@ def adapt_dp1_catalog(source: pd.DataFrame, config: Mapping[str, Any]) -> pd.Dat
             )
         if photometry in (None, "mag"):
             _copy_if_exists(source, out, f"{band}_{flux_type}Mag", f"mag_{band}")
+            _copy_if_exists(source, out, f"{band}_{flux_type}MagErr", f"magerr_{band}")
+        for aux_flux_type in config.get(
+            "auxiliary_flux_types",
+            DEFAULT_AUXILIARY_FLUX_TYPES,
+        ):
+            label = _photometry_label(str(aux_flux_type))
             _copy_if_exists(
-                source, out, f"{band}_{flux_type}MagErr", f"magerr_{band}"
+                source,
+                out,
+                f"{band}_{aux_flux_type}Flux",
+                f"{label}_flux_{band}",
+            )
+            _copy_if_exists(
+                source,
+                out,
+                f"{band}_{aux_flux_type}FluxErr",
+                f"{label}_fluxerr_{band}",
             )
         _copy_if_exists(source, out, f"{band}5_pixel", f"depth5_{band}")
 
@@ -184,7 +212,9 @@ def adapt_clauds_sextractor_catalog(
         source[_mapped_name(column_map, "zpdf_u68", "ZPDF_U68")]
         - source[_mapped_name(column_map, "zpdf_l68", "ZPDF_L68")]
     )
-    out["is_galaxy"] = _mapped_or_first(source, column_map, "obj_type", ["OBJ_TYPE"]) == 0
+    out["is_galaxy"] = (
+        _mapped_or_first(source, column_map, "obj_type", ["OBJ_TYPE"]) == 0
+    )
     out["mask_ok"] = _mapped_or_first(source, column_map, "mask", ["MASK"]) == 0
     out["quality_ok"] = True
     if "Z_SPEC" in source:
@@ -284,6 +314,7 @@ def _apply_footprint_config(
         )
     if "nside" in footprint:
         catalog = assign_healpix_pixels(catalog, nside=int(footprint["nside"]))
+    catalog = _apply_footprint_depth_cuts(catalog, footprint)
     jackknife = dict(config.get("jackknife", {}))
     if jackknife and "regions_per_field" in jackknife:
         catalog = assign_jackknife_regions(
@@ -291,6 +322,120 @@ def _apply_footprint_config(
             regions_per_field=int(jackknife["regions_per_field"]),
         )
     return catalog
+
+
+def _apply_footprint_depth_cuts(
+    catalog: pd.DataFrame,
+    footprint_config: Mapping[str, Any],
+) -> pd.DataFrame:
+    depth_config = footprint_config.get(
+        "depth_cuts",
+        footprint_config.get("depth_cut"),
+    )
+    if not depth_config:
+        return catalog
+    if not isinstance(depth_config, Mapping):
+        raise ValueError("footprint.depth_cuts must be a mapping")
+    if not bool(depth_config.get("enabled", True)):
+        return catalog
+    if "pixel" not in catalog:
+        raise ValueError("footprint.depth_cuts requires HEALPix 'pixel' column")
+
+    bands = [str(band) for band in depth_config.get("bands", [])]
+    if not bands:
+        bands = _infer_depth_bands(
+            catalog, str(depth_config.get("fluxerr_template", ""))
+        )
+    if not bands:
+        raise ValueError("footprint.depth_cuts needs a non-empty 'bands' list")
+
+    pixel_col = str(depth_config.get("pixel_col", "pixel"))
+    if pixel_col not in catalog:
+        raise ValueError(f"footprint.depth_cuts missing pixel column: {pixel_col}")
+
+    fluxerr_template = str(
+        depth_config.get("fluxerr_template", "cmodel_fluxerr_{band}")
+    )
+    min_depth = depth_config.get("min_depth", {})
+    if min_depth is None:
+        min_depth = {}
+    if not isinstance(min_depth, Mapping):
+        raise ValueError("footprint.depth_cuts.min_depth must be a mapping")
+    shallow_fraction = float(depth_config.get("drop_shallow_fraction", 0.0))
+    if not 0.0 <= shallow_fraction < 1.0:
+        raise ValueError("footprint.depth_cuts.drop_shallow_fraction must be in [0, 1)")
+
+    accepted = set(catalog[pixel_col].dropna().astype(int).unique().tolist())
+    depths_by_band = {
+        band: _pixel_depths(catalog, pixel_col, fluxerr_template.format(band=band))
+        for band in bands
+    }
+
+    for band, threshold in min_depth.items():
+        band = str(band)
+        if band not in depths_by_band:
+            raise ValueError(f"min_depth requested band outside depth bands: {band}")
+        depths = depths_by_band[band]
+        keep = depths["depth10"].to_numpy(float) >= float(threshold)
+        accepted &= set(depths.loc[keep, pixel_col].astype(int).tolist())
+
+    if shallow_fraction > 0:
+        for band in bands:
+            depths = depths_by_band[band]
+            in_current = depths[pixel_col].astype(int).isin(accepted)
+            current_depths = depths.loc[in_current, "depth10"].to_numpy(float)
+            current_depths = current_depths[np.isfinite(current_depths)]
+            if len(current_depths) == 0:
+                accepted = set()
+                break
+            threshold = float(np.nanquantile(current_depths, shallow_fraction))
+            keep = in_current & (depths["depth10"].to_numpy(float) >= threshold)
+            accepted &= set(depths.loc[keep, pixel_col].astype(int).tolist())
+
+    if not accepted:
+        raise ValueError("footprint.depth_cuts removed every footprint pixel")
+
+    keep_rows = catalog[pixel_col].astype(int).isin(accepted).to_numpy()
+    return catalog.loc[keep_rows].reset_index(drop=True)
+
+
+def _pixel_depths(
+    catalog: pd.DataFrame,
+    pixel_col: str,
+    fluxerr_col: str,
+) -> pd.DataFrame:
+    if fluxerr_col not in catalog:
+        raise ValueError(
+            f"Depth cut requested missing flux-error column: {fluxerr_col}"
+        )
+    fluxerr = catalog[fluxerr_col].to_numpy(float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        depth10 = MAGSYS_ZEROPOINT - 2.5 * np.log10(10.0 * fluxerr)
+    depth10[~np.isfinite(depth10) | (fluxerr <= 0)] = np.nan
+    data = pd.DataFrame(
+        {
+            pixel_col: catalog[pixel_col].to_numpy(int),
+            "depth10": depth10,
+        }
+    )
+    out = data.groupby(pixel_col, as_index=False)["depth10"].median()
+    out = out[np.isfinite(out["depth10"].to_numpy(float))].reset_index(drop=True)
+    return out
+
+
+def _infer_depth_bands(catalog: pd.DataFrame, template: str) -> list[str]:
+    if not template:
+        template = "cmodel_fluxerr_{band}"
+    if "{band}" not in template:
+        return []
+    pattern = re.escape(template).replace(r"\{band\}", r"(?P<band>[^_]+)")
+    regex = re.compile(f"^{pattern}$")
+    bands = []
+    for col in catalog.columns:
+        match = regex.match(col)
+        if match:
+            bands.append(match.group("band"))
+    return sorted(bands)
 
 
 def _with_photoz_columns(
@@ -314,6 +459,7 @@ def _with_photoz_columns(
     out = source.copy()
     values = []
     sigmas = []
+    labels = []
     for estimate in estimates:
         if not isinstance(estimate, Mapping):
             raise ValueError("Each photoz estimate must be a mapping")
@@ -322,6 +468,7 @@ def _with_photoz_columns(
             raise ValueError(f"Photo-z estimate column is missing: {z_col}")
         values.append(out[z_col].to_numpy(float))
         sigmas.append(_photoz_sigma(out, estimate))
+        labels.append(str(estimate.get("label", _photoz_estimate_label(z_col))))
 
     z_values = np.column_stack(values)
     z_sigmas = np.column_stack(sigmas)
@@ -336,6 +483,9 @@ def _with_photoz_columns(
 
     out[str(combine.get("z_col", "z_phot"))] = z_phot
     out[str(combine.get("err_col", "z_phot_err"))] = z_err
+    for label, value, sigma in zip(labels, values, sigmas):
+        out[f"photoz_{label}"] = value
+        out[f"photoz_sigma_{label}"] = sigma
     diff_col = combine.get("diff_col", "z_phot_diff")
     if diff_col:
         out[str(diff_col)] = np.nanmax(z_values, axis=1) - np.nanmin(z_values, axis=1)
@@ -356,9 +506,22 @@ def _photoz_sigma(
     missing = [col for col in (low_col, high_col) if col not in source]
     if missing:
         raise ValueError(f"Photo-z interval columns are missing: {missing}")
-    return 0.5 * (
-        source[high_col].to_numpy(float) - source[low_col].to_numpy(float)
-    )
+    return 0.5 * (source[high_col].to_numpy(float) - source[low_col].to_numpy(float))
+
+
+def _photoz_estimate_label(z_col: str) -> str:
+    label = z_col
+    for suffix in ("_z_mode", "_z_median", "_z_mean", "_z"):
+        if label.endswith(suffix):
+            label = label[: -len(suffix)]
+            break
+    label = re.sub(r"[^0-9a-zA-Z]+", "_", label).strip("_").lower()
+    return label or "estimate"
+
+
+def _photometry_label(flux_type: str) -> str:
+    label = re.sub(r"[^0-9a-zA-Z]+", "_", flux_type).strip("_").lower()
+    return label or "aux"
 
 
 def _catalog_bands(config: Mapping[str, Any]) -> list[str]:
@@ -393,9 +556,7 @@ def _first_existing(source: pd.DataFrame, names: list[str]) -> pd.Series:
     raise ValueError(f"None of these columns exist: {names}")
 
 
-def _mapped_name(
-    column_map: Mapping[str, str], logical_name: str, default: str
-) -> str:
+def _mapped_name(column_map: Mapping[str, str], logical_name: str, default: str) -> str:
     return str(column_map.get(logical_name, default))
 
 

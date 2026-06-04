@@ -1,10 +1,10 @@
 id: dp1_default
 sample: configs/samples/dp1_default.yaml
 stack:
-  colors: [g-r, r-i, i-z, g-i]
+  colors: [g-i, g-r, r-i, i-z]
   modes: [fcolors, mcolors]
   r_bin_edges:
-    geomspace: { start: 5.0, stop: 1000.0, num: 6 }
+    geomspace: { start: 10.0, stop: 1000.0, num: 6 }
   reference_annulus: [2000.0, 4000.0]
   snr_max: 100
   random_correction: true

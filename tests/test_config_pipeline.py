@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import sys
 from tempfile import TemporaryDirectory
 import unittest
 
 import numpy as np
 import yaml
+
+os.environ.setdefault("MPLCONFIGDIR", "/private/tmp/dusty_colors_mpl")
+os.environ.setdefault("XDG_CACHE_HOME", "/private/tmp/dusty_colors_cache")
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -59,6 +63,7 @@ def _write_graph(root: Path, *, foreground_z: list[float] | None = None) -> Path
             "id": "analysis_default",
             "sample": "configs/samples/dp1_default.yaml",
             "stack": {
+                "colors": ["g-i", "g-r"],
                 "modes": ["fcolors"],
                 "r_bin_edges": {"linspace": {"start": 0.0, "stop": 1.0, "num": 3}},
                 "reference_annulus": [2.0, 4.0],
@@ -79,9 +84,29 @@ def _handlers() -> StageHandlers:
 
     def stack(context) -> None:
         for path in context.expected_outputs:
-            path.write_bytes(b"stack")
+            np.savez_compressed(path, **_stack_arrays())
 
     return StageHandlers(catalog=catalog, sample=sample, stack=stack)
+
+
+def _stack_arrays() -> dict[str, np.ndarray]:
+    radius = np.geomspace(5.0, 100.0, 4)
+    arrays = {}
+    for index, color in enumerate(("g-i", "g-r")):
+        signal = np.array([0.08, 0.03, 0.012, 0.006]) * (index + 1)
+        err = signal * 0.2
+        samples = np.vstack((signal * 0.9, signal, signal * 1.1))
+        arrays.update(
+            {
+                f"{color}_bin_centers": radius,
+                f"{color}_avg": signal,
+                f"{color}_err": err,
+                f"{color}_jackknife_avg": samples.mean(axis=0),
+                f"{color}_jackknife_err": err,
+                f"{color}_jackknife_samples": samples,
+            }
+        )
+    return arrays
 
 
 class ConfigPipelineTest(unittest.TestCase):
@@ -123,9 +148,19 @@ class ConfigPipelineTest(unittest.TestCase):
             root = Path(tmp)
             analysis_path = _write_graph(root)
             run_pipeline(analysis_path, root=root, handlers=_handlers())
+            stack_dir = root / "results/stacks/analysis_default"
+            jackknife_plot = stack_dir / "analysis_default_fcolors_g_i_jackknife.pdf"
+            all_colors_plot = stack_dir / "analysis_default_fcolors_all_colors.pdf"
+            self.assertTrue(jackknife_plot.exists())
+            self.assertTrue(all_colors_plot.exists())
+
+            jackknife_plot.unlink()
+            all_colors_plot.unlink()
 
             run_again = run_pipeline(analysis_path, root=root, handlers=StageHandlers())
             self.assertEqual([stage.action for stage in run_again.stages], ["skip"] * 3)
+            self.assertTrue(jackknife_plot.exists())
+            self.assertTrue(all_colors_plot.exists())
 
             _write_graph(root, foreground_z=[0.25, 0.55])
             with self.assertRaises(ManifestMismatchError):

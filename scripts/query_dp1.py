@@ -7,10 +7,11 @@ service = get_tap_service("tap")
 
 # Programmatically build query
 bands = "ugrizy"
-query = "SELECT objectID, coord_ra, coord_dec, ebv, refExtendedness"
+query = "SELECT objectID, coord_ra, coord_dec, ebv, refExtendedness, i_blendedness"
 
-# Fluxes
+# Total fluxes for magnitude/depth cuts and aperture-matched fluxes for colors
 for band in bands:
+    query += f", {band}_cModelFlux, {band}_cModelFluxErr"
     query += f", {band}_gaap1p0Flux,  {band}_gaap1p0FluxErr"
 
 # Specify the catalog

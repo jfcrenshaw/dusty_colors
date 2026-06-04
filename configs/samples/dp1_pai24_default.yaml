@@ -1,5 +1,5 @@
-id: dp1_default
-catalog: configs/catalogs/dp1.yaml
+id: dp1_pai24_default
+catalog: configs/catalogs/dp1_pai24.yaml
 selection:
   foreground_z: [0.2, 0.5]
   background_z: [0.7, 1.4]

@@ -60,9 +60,7 @@ def apply_kcorrect(
     kc = _build_kcorrect(Kcorrect, config)
 
     response_bands = list(
-        config.get("response_bands")
-        or config.get("bands")
-        or _infer_response_bands(kc)
+        config.get("response_bands") or config.get("bands") or _infer_response_bands(kc)
     )
     if not response_bands:
         raise ValueError(
@@ -137,7 +135,7 @@ def apply_halo_mass(
     catalog: pd.DataFrame,
     config: Mapping[str, Any],
 ) -> pd.DataFrame:
-    """Append Behroozi et al. (2013) halo masses and R200."""
+    """Append Moster et al. (2013) halo masses and R200."""
     stellar_mass_col = str(config.get("stellar_mass_col", "stellar_mass_log"))
     redshift_col = str(config.get("redshift_col", "z_phot"))
     missing = [col for col in (stellar_mass_col, redshift_col) if col not in catalog]
@@ -188,7 +186,7 @@ def estimate_stellar_mass_from_halo_mass(
     halo_mass: float,
     redshift: float,
 ) -> float:
-    """Behroozi et al. (2013) stellar-mass to halo-mass relation."""
+    """Moster et al. (2013) stellar-mass to halo-mass relation."""
     zfactor = redshift / (1.0 + redshift)
     m1 = 10 ** (11.590 + 1.195 * zfactor)
     n = 0.0351 - 0.0247 * zfactor
@@ -261,7 +259,9 @@ def _apply_error_floor(
     floors = dict(config.get("error_floor", {}))
     for i, band in enumerate(bands):
         if band in floors:
-            out[:, i] = np.maximum(out[:, i], np.abs(maggies[:, i]) * float(floors[band]))
+            out[:, i] = np.maximum(
+                out[:, i], np.abs(maggies[:, i]) * float(floors[band])
+            )
     return out
 
 

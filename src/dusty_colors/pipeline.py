@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, TypeAlias
+import warnings
 
 import yaml
 
@@ -163,6 +164,7 @@ def run_pipeline(
         if check.action == "skip" and not force_stage:
             if kind == "stack":
                 write_resolved_config(spec.output_dir, resolved)
+                write_stack_figures(spec, resolved)
             results.append(_stage_result(spec, "skip", check.reason))
             continue
 
@@ -282,6 +284,7 @@ def run_stage(
 
     if spec.kind == "stack":
         write_resolved_config(spec.output_dir, resolved)
+        write_stack_figures(spec, resolved)
     write_manifest(spec.output_dir, expected_manifest(spec, resolved))
 
 
@@ -408,6 +411,34 @@ def write_resolved_config(output_dir: str | Path, resolved: ResolvedConfig) -> N
     write_yaml(Path(output_dir) / "config_resolved.yaml", resolved.to_dict())
 
 
+def write_stack_figures(spec: StageSpec, resolved: ResolvedConfig) -> tuple[Path, ...]:
+    """Write standard stack figures next to stack outputs when possible."""
+
+    if spec.kind != "stack":
+        return ()
+
+    from .plotting import save_stack_figures
+
+    paths: list[Path] = []
+    for mode in stack_modes(resolved.analysis):
+        try:
+            paths.extend(
+                save_stack_figures(
+                    spec.output_dir,
+                    spec.output_dir,
+                    mode=mode,
+                    root=resolved.root,
+                )
+            )
+        except (OSError, KeyError, ValueError) as exc:
+            warnings.warn(
+                f"Could not write stack figures for {spec.config.id} {mode}: {exc}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+    return tuple(paths)
+
+
 def force_flag_for(kind: PipelineStageKind) -> str:
     if kind == "catalog":
         return "--force-catalog"
@@ -436,6 +467,7 @@ def _wrap_domain_handler(
         return lambda context: handler(context.config.data, context.output_dir)
 
     if kind == "sample":
+
         def run_sample(context: StageContext) -> None:
             catalog_config = context.resolved.catalog.data
             handler(
@@ -449,6 +481,7 @@ def _wrap_domain_handler(
         return run_sample
 
     if kind == "stack":
+
         def run_stack(context: StageContext) -> None:
             handler(
                 context.input_dirs["sample"],

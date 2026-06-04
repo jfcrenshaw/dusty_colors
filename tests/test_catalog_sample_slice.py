@@ -42,7 +42,10 @@ class CatalogSampleSliceTest(unittest.TestCase):
                 "field": ["ECDFS", "ECDFS"],
                 "z_phot": [0.3, 0.8],
                 "z_phot_err": [0.03, 0.04],
+                "i_blendedness": [0.1, 0.2],
                 "refExtendedness": [0.9, 0.2],
+                "r_cModelFlux": [12.0, 22.0],
+                "r_cModelFluxErr": [1.2, 2.2],
                 "g_gaap1p0Flux": [10.0, 20.0],
                 "g_gaap1p0FluxErr": [1.0, 2.0],
                 "r_gaap1p0Flux": [5.0, 10.0],
@@ -56,6 +59,8 @@ class CatalogSampleSliceTest(unittest.TestCase):
         validate_canonical_schema(catalog, bands=["g", "r"], photometry="flux")
         self.assertEqual(list(catalog["object_id"]), [10, 11])
         self.assertEqual(list(catalog["is_galaxy"]), [True, False])
+        np.testing.assert_allclose(catalog["blendedness_i"], [0.1, 0.2])
+        np.testing.assert_allclose(catalog["cmodel_flux_r"], [12.0, 22.0])
         self.assertIn("depth5_g", catalog)
         np.testing.assert_allclose(catalog["flux_g"], raw["g_gaap1p0Flux"])
 
@@ -168,15 +173,67 @@ class CatalogSampleSliceTest(unittest.TestCase):
             self.assertEqual(list(catalog["object_id"]), [1, 2])
             np.testing.assert_allclose(
                 catalog["flux_g"],
-                [10.0 * 10 ** 0.04, 20.0],
+                [10.0 * 10**0.04, 20.0],
             )
             np.testing.assert_allclose(
                 catalog["fluxerr_g"],
-                [1.0 * 10 ** 0.04, 2.0],
+                [1.0 * 10**0.04, 2.0],
             )
             np.testing.assert_allclose(catalog["spec_z"].iloc[0], 0.31)
             self.assertTrue(np.isnan(catalog["spec_z"].iloc[1]))
             self.assertTrue((tmp_path / "out/footprint.parquet").exists())
+            self.assertIn("photoz_sigma_fzboost", catalog)
+            self.assertIn("photoz_sigma_lephare", catalog)
+            self.assertIn("z_phot_diff", catalog)
+
+    def test_prepare_catalog_applies_configurable_depth_footprint_cut(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            good_err = 10 ** ((31.4 - 25.0) / 2.5) / 10.0
+            shallow_err = 10 ** ((31.4 - 23.0) / 2.5) / 10.0
+            objects = pd.DataFrame(
+                {
+                    "objectID": [1, 2],
+                    "coord_ra": [53.0, 55.0],
+                    "coord_dec": [-28.0, -28.0],
+                    "z_phot": [0.3, 0.4],
+                    "z_phot_err": [0.03, 0.04],
+                    "refExtendedness": [1.0, 1.0],
+                    "g_gaap1p0Flux": [10.0, 20.0],
+                    "g_gaap1p0FluxErr": [1.0, 2.0],
+                    "r_gaap1p0Flux": [5.0, 10.0],
+                    "r_gaap1p0FluxErr": [0.5, 1.0],
+                    "r_cModelFlux": [5.0, 10.0],
+                    "r_cModelFluxErr": [good_err, shallow_err],
+                }
+            )
+            object_path = tmp_path / "objects.parquet"
+            objects.to_parquet(object_path, index=False)
+
+            prepare_catalog(
+                {
+                    "id": "dp1_depth_test",
+                    "adapter": "dp1",
+                    "primary_source": "objects",
+                    "sources": {"objects": {"path": object_path}},
+                    "bands": ["g", "r"],
+                    "photometry": "flux",
+                    "footprint": {
+                        "nside": 1024,
+                        "depth_cuts": {
+                            "enabled": True,
+                            "bands": ["r"],
+                            "fluxerr_template": "cmodel_fluxerr_{band}",
+                            "min_depth": {"r": 24.0},
+                            "drop_shallow_fraction": 0.0,
+                        },
+                    },
+                },
+                tmp_path / "out",
+            )
+            catalog = pd.read_parquet(tmp_path / "out/catalog.parquet")
+
+            self.assertEqual(list(catalog["object_id"]), [1])
 
     def test_clauds_adapter_maps_source_extractor_magnitudes(self) -> None:
         raw = pd.DataFrame(
@@ -238,6 +295,63 @@ class CatalogSampleSliceTest(unittest.TestCase):
 
         self.assertEqual(list(samples["foreground"]["object_id"]), [1])
         self.assertEqual(list(samples["background"]["object_id"]), [2])
+
+    def test_selection_applies_paper_style_optional_cuts(self) -> None:
+        def flux_from_mag(mag: float) -> float:
+            return 10 ** ((31.4 - mag) / 2.5)
+
+        catalog = pd.DataFrame(
+            {
+                "object_id": [1, 2, 3, 4, 5, 6],
+                "ra": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+                "dec": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "field": ["A"] * 6,
+                "z_phot": [0.3, 0.35, 0.4, 0.45, 0.9, 1.0],
+                "z_phot_err": [0.03] * 6,
+                "photoz_sigma_fzboost": [0.04, 0.11, 0.04, 0.04, 0.04, 0.04],
+                "photoz_sigma_lephare": [0.05] * 6,
+                "z_phot_diff": [0.03, 0.03, 0.2, 0.03, 0.03, 0.03],
+                "blendedness_i": [0.1, 0.1, 0.1, 0.5, 0.1, 0.1],
+                "is_galaxy": [True] * 6,
+                "mask_ok": [True] * 6,
+                "quality_ok": [True] * 6,
+                "flux_g": [10.0] * 6,
+                "fluxerr_g": [1.0] * 6,
+                "flux_r": [5.0] * 6,
+                "fluxerr_r": [1.0] * 6,
+                "cmodel_flux_r": [
+                    flux_from_mag(23.0),
+                    flux_from_mag(23.0),
+                    flux_from_mag(23.0),
+                    flux_from_mag(23.0),
+                    flux_from_mag(23.5),
+                    flux_from_mag(24.5),
+                ],
+            }
+        )
+        config = {
+            "selection": {
+                "foreground_z": [0.2, 0.5],
+                "background_z": [0.7, 1.4],
+                "photoz_max_sigma": 0.1,
+                "photoz_estimate_max_sigma": 0.1,
+                "photoz_max_diff_norm": 0.1,
+                "blendedness_max": {
+                    "column": "blendedness_i",
+                    "value": 0.42,
+                },
+                "magnitude_limit": {
+                    "band": "r",
+                    "max": 24.0,
+                    "flux_col": "cmodel_flux_r",
+                },
+            }
+        }
+
+        samples = select_samples(catalog, config, bands=["g", "r"], photometry="flux")
+
+        self.assertEqual(list(samples["foreground"]["object_id"]), [1])
+        self.assertEqual(list(samples["background"]["object_id"]), [5])
 
     def test_sample_outputs_write_foreground_and_background(self) -> None:
         with TemporaryDirectory() as tmp:

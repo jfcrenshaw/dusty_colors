@@ -71,17 +71,22 @@ Useful catalog options:
   `suffixes`, `validate`, and `drop_right_key`.
 - `photoz.combine`: combines `estimates` with `z` and either `err` or
   `err_low`/`err_high`; optional output names are `z_col`, `err_col`, and
-  `diff_col`.
+  `diff_col`. Each estimate also gets a `photoz_<label>` and
+  `photoz_sigma_<label>` diagnostic column for stricter sample cuts.
 - `extinction`: `enabled`, `ebv_column`, `bands`, and per-band `coefficients`.
 - `enrichments`: `kcorrect` and `halo_mass`, each with `enabled`. `kcorrect`
   accepts `model`/`filename` or `responses`, plus `responses_out`,
   `responses_map`, `redshift_range`, `nredshift`, `abcorrect`,
   `interpolate_templates`, `response_bands`, `absmag_bands`, `redshift_col`,
   `min_redshift`, `max_redshift`, `error_floor`, `stellar_mass_col`, and
-  `linear_stellar_mass_col`. `halo_mass` accepts `stellar_mass_col`,
+  `linear_stellar_mass_col`. `halo_mass` uses the Moster et al. (2013)
+  stellar-to-halo-mass relation and accepts `stellar_mass_col`,
   `stellar_mass_is_log`, `redshift_col`, `min_redshift`, `max_redshift`,
   `halo_mass_col`, `r200_col`, `log_mass_min`, and `log_mass_max`.
 - `footprint`: `fields`, `field_radius_deg`, and HEALPix `nside`.
+  `footprint.depth_cuts` can be disabled with `enabled: false`; when enabled,
+  it accepts `bands`, `fluxerr_template`, `min_depth`, and
+  `drop_shallow_fraction` to define the accepted random-catalog footprint.
 - `jackknife`: `regions_per_field` adds angular-sector jackknife regions.
 
 ### Sample selection and cleaning
@@ -90,10 +95,13 @@ Sample YAML files point at a catalog YAML, apply foreground/background cuts, and
 write `foreground.parquet` and `background.parquet`.
 
 Selection options include `foreground_z`, `background_z`, `photoz_max_sigma`,
-`photoz_max_sigma_norm`, `shared_query`, `foreground_query`, and
-`background_query`. Before these cuts are written, the pipeline always applies
-minimal validity filters: finite positions/redshifts, galaxy/mask/quality flags,
-finite requested photometry, and positive photometry errors.
+`photoz_max_sigma_norm`, `photoz_estimate_max_sigma`, `photoz_max_diff_norm`,
+`blendedness_max`, `magnitude_limit`/`magnitude_limits`, `shared_query`,
+`foreground_query`, and `background_query`. Optional structured cuts can be
+turned off with `enabled: false`. Before these cuts are written, the pipeline
+always applies minimal validity filters: finite positions/redshifts,
+galaxy/mask/quality flags, finite requested photometry, and positive photometry
+errors.
 
 The current sample configs set `cleaning.enabled: false`, so optional configured
 cleaning is off by default. When enabled, the cleaning block can use
@@ -120,3 +128,21 @@ Stack options include `colors`, `modes` (`fcolors` and/or `mcolors`),
 `reference_annulus`, `snr_max`, `bin_slop`, `num_threads`, `jackknife`,
 `patch_col`, `cross_patch_weight`, `random_correction`, `random_multiplier`,
 `random_seed`, and `random_nside`.
+
+Each analysis run also refreshes standard stack figures in
+`results/stacks/<analysis-id>`: one square log-log jackknife-sample plot for the
+first configured color, and one square log-log full-signal plot for every color,
+for each configured stack mode.
+
+Stack plotting helpers also live in `dusty_colors.plotting` for manual use. They
+load the analysis YAML color order and apply the project Matplotlib style:
+
+```python
+from dusty_colors.plotting import save_stack_figures
+
+save_stack_figures(
+    "configs/analyses/dp1_pai24_default.yaml",
+    "figures",
+    mode="fcolors",
+)
+```
