@@ -31,7 +31,7 @@ class Stacker:
     # Stacking options
     free_fluxes: bool = False  # Whether to use "free" flux variants
     snr_max: float = 100  # Maximum SNR (sets error floor)
-    weighted: bool = True  # Whether to use weighted averages in bins
+    weighted: bool = False  # Whether to use weighted averages in bins
     r_aper_min: float = 2.5  # Inner aperture radius (Mpc) for background normalization
     r_aper_max: float = 3.5  # Outer aperture radius (Mpc) for background normalization
 

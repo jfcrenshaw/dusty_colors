@@ -60,7 +60,7 @@ class Selector:
 
     # Parameters for background cleaning
     clean_nonuniformity: bool = False  # Clean non-uniformity in background?
-    clean_ztrends: bool = False  # Clean redshift trends in background?
+    clean_ztrends: bool = True  # Clean redshift trends in background?
     clean_outliers: bool = True  # Remove outliers from background?
 
     # Queries for custom cuts
