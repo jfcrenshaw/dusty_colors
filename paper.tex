@@ -216,10 +216,32 @@ The flipped stack has no physical circumgalactic-reddening signal but inherits t
 \begin{align}
     \Delta \bar c_i \equiv \bar{c}_i - \bar{c}^\text{\,flip}_i
 \end{align}
-as our systematics-corrected estimator \citep[cf.][]{menard2010, peek2015}.
+as an initial systematics-corrected estimator \citep[cf.][]{menard2010, peek2015}.
 
-We obtain the final estimator, $E_i(c) = \Delta \bar c_i - \Delta \bar c_\text{ref}$, by subtracting the average value in a reference annulus at $2 < r_\perp\,/\,\text{Mpc} < 4$.
-This removes the intrinsic mean galaxy color, any constant offset between the regular and flipped stacks, and suppresses spurious correlations due to survey non-uniformity.
+We further correct for the finite and non-uniform survey footprint with random catalogs drawn from the same selected healpix footprint used for the galaxy sample.
+Random positions are sampled uniformly within the accepted \texttt{NSIDE=1024} pixels, separately within each jackknife region.
+For the random foreground catalog, we preserve the real foreground redshift distribution by assigning each random position a foreground-galaxy photo-$z$ drawn from the corresponding jackknife region; this keeps the conversion from angular separation to $r_\perp$ matched to the data.
+We then measure the same forward-minus-flipped stack around random positions,
+\begin{align}
+    \Delta \bar c^\text{\,rand}_i
+    \equiv \bar{c}^\text{\,rand}_i
+    - \bar{c}^{\text{\,rand,flip}}_i ,
+\end{align}
+where $\bar{c}^\text{\,rand}_i$ stacks background-galaxy colors around random foreground positions and $\bar{c}^{\text{\,rand,flip}}_i$ stacks foreground-galaxy colors around random background positions, again using the foreground photo-$z$ to compute $r_\perp$.
+Our random-corrected profile is
+\begin{align}
+    \Delta \bar c^\text{\,corr}_i
+    \equiv
+    \Delta \bar c_i - \Delta \bar c^\text{\,rand}_i .
+\end{align}
+
+We obtain the final estimator by subtracting the average value of this same random-corrected quantity in a reference annulus at $2 < r_\perp\,/\,\text{Mpc} < 4$:
+\begin{align}
+    E_i(c) =
+    \Delta \bar c^\text{\,corr}_i
+    - \Delta \bar c^\text{\,corr}_\text{ref}.
+\end{align}
+This removes the intrinsic mean galaxy color, any constant offset between the regular and flipped stacks, and suppresses spurious correlations due to survey non-uniformity and footprint geometry.
 This latter effect is especially important for removing edge effects where the depth rolls off at the edge of the fields.
 We verify that shifting the reference annulus by $\pm 1$\,Mpc changes the inferred profile by less than $\pm1\sigma$ in all bins.
 %For our headline color we identify $E(g-i)$ with the standard reddening $E(B-V)$, following \citet{menard2010} and \citet{genc2025}.

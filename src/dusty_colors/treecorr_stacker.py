@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+import healpy as hp
 import numpy as np
 import pandas as pd
 import treecorr
@@ -68,6 +69,10 @@ class TreeCorrStacker:
     Flipped stacks measure foreground-galaxy colors over the same foreground-lens
     pair geometry.  In both cases TreeCorr bins pairs by foreground-lens-plane
     impact parameter using ``Rlens`` and foreground ``D_A(z_phot)``.
+
+    When ``random_correction`` is enabled, the estimator subtracts the same
+    forward-minus-flipped stack measured with random positions drawn uniformly
+    from the selected HEALPix footprint, patch by patch.
     """
 
     name: str = "treecorr"
@@ -82,16 +87,20 @@ class TreeCorrStacker:
     snr_max: float = 100.0
 
     r_bin_edges: list[float] | np.ndarray = field(
-        default_factory=lambda: np.geomspace(5.0e-3, 1.5, 7)
+        default_factory=lambda: np.geomspace(0.005, 1.0, 6)
     )
     r_aper_min: float = 2.0
-    r_aper_max: float = 4.0
+    r_aper_max: float = 3.0
 
     bin_slop: float = 0.0
     num_threads: int | None = None
     jackknife: bool = True
     patch_col: str = "jackknife_region"
     cross_patch_weight: str = "match"
+    random_correction: bool = True
+    random_multiplier: float = 10.0
+    random_seed: int = 42
+    random_nside: int = 1024
 
     exclude_jk: int | None = None
     select_jk: int | None = None
@@ -107,6 +116,9 @@ class TreeCorrStacker:
 
         self._fg_pos_cat: Any | None = None
         self._bg_pos_cat: Any | None = None
+        self._random_fg_pos_cat: Any | None = None
+        self._random_bg_pos_cat: Any | None = None
+        self._footprint_catalog: pd.DataFrame | None = None
         self._treecorr_patch_col = "_treecorr_patch"
 
     def run(
@@ -143,14 +155,34 @@ class TreeCorrStacker:
 
             forward = self._profile(background, bins, ref_bin, mode, "forward")
             flipped = self._profile(foreground, bins, ref_bin, mode, "flipped")
+            random_forward = None
+            random_flipped = None
+            if self.random_correction:
+                random_forward = self._profile(
+                    background, bins, ref_bin, mode, "forward", random=True
+                )
+                random_flipped = self._profile(
+                    foreground, bins, ref_bin, mode, "flipped", random=True
+                )
 
-            results.update(self._result(color, bins, mode, forward, flipped))
+            results.update(
+                self._result(
+                    color,
+                    bins,
+                    mode,
+                    forward,
+                    flipped,
+                    random_forward,
+                    random_flipped,
+                )
+            )
         print(".")
 
         np.savez_compressed(self._stack_file(mode), **results)
 
     def _load_catalogs(self, force_selector: bool) -> None:
         self.selector.run(force=force_selector)
+        self._footprint_catalog = None
         self._foreground = self._read_catalog("foreground", self.clean_foreground)
         self._background = self._read_catalog("background", self.clean_background)
 
@@ -171,10 +203,17 @@ class TreeCorrStacker:
         ).value
         self._drop_bad_positions()
         self._setup_jackknife()
+        self._setup_randoms()
         self._fg_pos_cat = None
         self._bg_pos_cat = None
+        self._random_fg_pos_cat = None
+        self._random_bg_pos_cat = None
 
     def _read_catalog(self, sample: str, cleaned: bool) -> pd.DataFrame:
+        if sample == "all":
+            return pd.read_parquet(self.in_dir / "galaxy_catalog.parquet").reset_index(
+                drop=True
+            )
         suffix = "_cleaned" if cleaned else ""
         path = self.in_dir / f"galaxy_catalog_{sample}{suffix}.parquet"
         return pd.read_parquet(path).reset_index(drop=True)
@@ -199,10 +238,23 @@ class TreeCorrStacker:
                 "Foreground and background catalogs must both be non-empty"
             )
 
+    def _read_footprint_catalog(self, label: str, require_patch: bool) -> pd.DataFrame:
+        if self._footprint_catalog is None:
+            self._footprint_catalog = self._read_catalog("all", cleaned=False)
+        if "pixel" not in self._footprint_catalog:
+            raise ValueError(f"{label} needs a 'pixel' column in the selected catalog")
+        if require_patch and self.patch_col not in self._footprint_catalog:
+            raise ValueError(
+                f"{label} needs patch column '{self.patch_col}' in the selected catalog"
+            )
+        return self._footprint_catalog
+
     def _setup_jackknife(self) -> None:
         self._use_jackknife = False
         self._npatch = 1
         if not self.jackknife:
+            self._foreground[self._treecorr_patch_col] = 0
+            self._background[self._treecorr_patch_col] = 0
             return
 
         if (
@@ -246,6 +298,155 @@ class TreeCorrStacker:
         self._npatch = len(patches)
         self._use_jackknife = True
 
+    def _setup_randoms(self) -> None:
+        self._random_foreground = None
+        self._random_background = None
+        self._random_foreground_da = None
+        if not self.random_correction:
+            return
+        if self.random_multiplier <= 0:
+            raise ValueError("random_multiplier must be positive")
+
+        footprint = self._read_footprint_catalog(
+            "Random correction", require_patch=True
+        )
+
+        if getattr(self, "_use_jackknife", False):
+            patch_map = dict(
+                zip(
+                    self._foreground[self.patch_col].to_numpy(int),
+                    self._foreground[self._treecorr_patch_col].to_numpy(int),
+                )
+            )
+            patch_map.update(
+                zip(
+                    self._background[self.patch_col].to_numpy(int),
+                    self._background[self._treecorr_patch_col].to_numpy(int),
+                )
+            )
+            footprint = footprint[footprint[self.patch_col].isin(patch_map)]
+            footprint = footprint.assign(
+                **{
+                    self._treecorr_patch_col: [
+                        patch_map[patch]
+                        for patch in footprint[self.patch_col].to_numpy(int)
+                    ]
+                }
+            )
+        else:
+            footprint = footprint.assign(**{self._treecorr_patch_col: 0})
+
+        pixels_by_patch = {
+            patch: group["pixel"].dropna().to_numpy(int)
+            for patch, group in footprint.groupby(self._treecorr_patch_col)
+        }
+        pixels_by_patch = {
+            patch: np.unique(pixels)
+            for patch, pixels in pixels_by_patch.items()
+            if len(pixels) > 0
+        }
+        missing = set(self._foreground[self._treecorr_patch_col].unique()) - set(
+            pixels_by_patch
+        )
+        missing |= set(self._background[self._treecorr_patch_col].unique()) - set(
+            pixels_by_patch
+        )
+        if missing:
+            raise ValueError(f"Missing random-footprint pixels for patches: {missing}")
+
+        rng = np.random.default_rng(self.random_seed)
+        self._random_foreground, self._random_foreground_da = self._random_catalog_like(
+            self._foreground,
+            self._foreground_da,
+            pixels_by_patch,
+            rng,
+        )
+        self._random_background, _ = self._random_catalog_like(
+            self._background,
+            None,
+            pixels_by_patch,
+            rng,
+        )
+        print(
+            "   TreeCorr random correction using "
+            f"{len(self._random_foreground)} foreground and "
+            f"{len(self._random_background)} background random positions"
+        )
+
+    def _random_catalog_like(
+        self,
+        catalog: pd.DataFrame,
+        radial_distance: np.ndarray | None,
+        pixels_by_patch: dict[int, np.ndarray],
+        rng: np.random.Generator,
+    ) -> tuple[pd.DataFrame, np.ndarray | None]:
+        rows = []
+        distances = []
+        for patch in sorted(catalog[self._treecorr_patch_col].unique()):
+            in_patch = catalog[self._treecorr_patch_col].to_numpy(int) == patch
+            indices = np.where(in_patch)[0]
+            n_random = max(1, int(np.ceil(self.random_multiplier * len(indices))))
+            templates = rng.choice(indices, size=n_random, replace=True)
+            ra, dec = self._sample_patch_positions(
+                pixels_by_patch[int(patch)],
+                n_random,
+                rng,
+            )
+            rows.append(
+                pd.DataFrame(
+                    {
+                        "coord_ra": ra,
+                        "coord_dec": dec,
+                        self._treecorr_patch_col: int(patch),
+                    }
+                )
+            )
+            if radial_distance is not None:
+                distances.append(radial_distance[templates])
+
+        random_catalog = pd.concat(rows, ignore_index=True)
+        random_distance = np.concatenate(distances) if distances else None
+        return random_catalog, random_distance
+
+    def _sample_patch_positions(
+        self,
+        pixels: np.ndarray,
+        n_random: int,
+        rng: np.random.Generator,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        pixels = np.asarray(pixels, dtype=int)
+        pixel_set = set(pixels.tolist())
+        lon, lat = hp.pix2ang(self.random_nside, pixels, nest=True, lonlat=True)
+        pixel_radius = np.rad2deg(np.sqrt(hp.nside2pixarea(self.random_nside)))
+        ra_min = np.min(lon) - pixel_radius
+        ra_max = np.max(lon) + pixel_radius
+        dec_min = np.max([np.min(lat) - pixel_radius, -90.0])
+        dec_max = np.min([np.max(lat) + pixel_radius, 90.0])
+
+        ras: list[np.ndarray] = []
+        decs: list[np.ndarray] = []
+        n_have = 0
+        while n_have < n_random:
+            batch = max(1024, 4 * (n_random - n_have))
+            ra = rng.uniform(ra_min, ra_max, size=batch)
+            sin_dec = rng.uniform(
+                np.sin(np.deg2rad(dec_min)),
+                np.sin(np.deg2rad(dec_max)),
+                size=batch,
+            )
+            dec = np.rad2deg(np.arcsin(sin_dec))
+            pix = hp.ang2pix(self.random_nside, ra, dec, nest=True, lonlat=True)
+            keep = np.fromiter((p in pixel_set for p in pix), dtype=bool, count=batch)
+            if np.any(keep):
+                ras.append(ra[keep])
+                decs.append(dec[keep])
+                n_have += int(np.sum(keep))
+
+        return (
+            np.concatenate(ras)[:n_random],
+            np.concatenate(decs)[:n_random],
+        )
+
     def _observable(
         self, catalog: pd.DataFrame, color: str, mode: ColorMode
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -277,10 +478,12 @@ class TreeCorrStacker:
         ref_bin: _RadialBin,
         mode: ColorMode,
         direction: StackDirection,
+        random: bool = False,
     ) -> _Profile:
         value, err, good = observable
         bin_results = [
-            self._stack_bin(value, err, good, b, direction) for b in bins + [ref_bin]
+            self._stack_bin(value, err, good, b, direction, random=random)
+            for b in bins + [ref_bin]
         ]
         rows = np.array(
             [
@@ -313,11 +516,14 @@ class TreeCorrStacker:
         good: np.ndarray,
         radial_bin: _RadialBin,
         direction: StackDirection,
+        random: bool = False,
     ) -> _BinResult:
         mean, count_weight, npairs, _ = self._pair_mean(
-            value, good, radial_bin, direction
+            value, good, radial_bin, direction, random=random
         )
-        mean2, _, _, _ = self._pair_mean(value**2, good, radial_bin, direction)
+        mean2, _, _, _ = self._pair_mean(
+            value**2, good, radial_bin, direction, random=random
+        )
         if count_weight == 0 or not np.isfinite(mean) or not np.isfinite(mean2):
             return _BinResult(np.nan, np.nan, 0.0, npairs, ())
 
@@ -326,7 +532,7 @@ class TreeCorrStacker:
         weight[good] = 1.0 / (err[good] ** 2 + variance_floor)
 
         avg, weight_sum, npairs, corrs = self._pair_mean(
-            value, good, radial_bin, direction, weight
+            value, good, radial_bin, direction, weight, random=random
         )
         avg_err = np.sqrt(1.0 / weight_sum) if weight_sum > 0 else np.nan
         return _BinResult(avg, avg_err, weight_sum, npairs, corrs)
@@ -338,6 +544,7 @@ class TreeCorrStacker:
         radial_bin: _RadialBin,
         direction: StackDirection,
         weight: np.ndarray | None = None,
+        random: bool = False,
     ) -> tuple[float, float, float, tuple[Any, ...]]:
         if not np.any(good):
             return np.nan, 0.0, 0.0, ()
@@ -348,7 +555,11 @@ class TreeCorrStacker:
             )
             corr = self._nk(radial_bin)
             corr.process(
-                self._foreground_position_catalog(),
+                (
+                    self._random_foreground_position_catalog()
+                    if random
+                    else self._foreground_position_catalog()
+                ),
                 source,
                 metric="Rlens",
                 num_threads=self.num_threads,
@@ -364,7 +575,11 @@ class TreeCorrStacker:
         denominator = self._nn(radial_bin)
         denominator.process(
             self._foreground_catalog(good, w=pair_weight),
-            self._background_position_catalog(),
+            (
+                self._random_background_position_catalog()
+                if random
+                else self._background_position_catalog()
+            ),
             metric="Rlens",
             num_threads=self.num_threads,
         )
@@ -374,7 +589,11 @@ class TreeCorrStacker:
         numerator = self._nn(radial_bin)
         numerator.process(
             self._foreground_catalog(good, w=pair_weight * value[good]),
-            self._background_position_catalog(),
+            (
+                self._random_background_position_catalog()
+                if random
+                else self._background_position_catalog()
+            ),
             metric="Rlens",
             num_threads=self.num_threads,
         )
@@ -392,14 +611,47 @@ class TreeCorrStacker:
         mode: ColorMode,
         forward: _Profile,
         flipped: _Profile,
+        random_forward: _Profile | None = None,
+        random_flipped: _Profile | None = None,
     ) -> dict[str, np.ndarray]:
-        delta = forward.color - flipped.color
-        delta_err = np.hypot(forward.color_err, flipped.color_err)
-        ref = forward.ref_color - flipped.ref_color
-        ref_err = np.hypot(forward.ref_color_err, flipped.ref_color_err)
+        has_random = random_forward is not None or random_flipped is not None
+        if has_random and (random_forward is None or random_flipped is None):
+            raise ValueError("Random correction requires both random profiles")
+
+        raw_delta = forward.color - flipped.color
+        raw_delta_err = np.hypot(forward.color_err, flipped.color_err)
+        raw_ref = forward.ref_color - flipped.ref_color
+        raw_ref_err = np.hypot(forward.ref_color_err, flipped.ref_color_err)
+
+        random_delta = np.zeros_like(raw_delta)
+        random_delta_err = np.zeros_like(raw_delta_err)
+        random_ref = 0.0
+        random_ref_err = 0.0
+        if has_random:
+            random_delta = random_forward.color - random_flipped.color
+            random_delta_err = np.hypot(
+                random_forward.color_err, random_flipped.color_err
+            )
+            random_ref = random_forward.ref_color - random_flipped.ref_color
+            random_ref_err = np.hypot(
+                random_forward.ref_color_err,
+                random_flipped.ref_color_err,
+            )
+
+        delta = raw_delta - random_delta
+        delta_err = np.hypot(raw_delta_err, random_delta_err)
+        ref = raw_ref - random_ref
+        ref_err = np.hypot(raw_ref_err, random_ref_err)
         estimator = delta - ref
         analytic_err = np.hypot(delta_err, ref_err)
-        jackknife = self._jackknife_stats(mode, forward, flipped, len(bins))
+        jackknife = self._jackknife_stats(
+            mode,
+            forward,
+            flipped,
+            len(bins),
+            random_forward=random_forward,
+            random_flipped=random_flipped,
+        )
         covariance = (
             jackknife.covariance if jackknife is not None else np.diag(analytic_err**2)
         )
@@ -413,8 +665,13 @@ class TreeCorrStacker:
             f"{color}_analytic_err": analytic_err,
             f"{color}_delta_avg": delta,
             f"{color}_delta_err": delta_err,
+            f"{color}_raw_delta_avg": raw_delta,
+            f"{color}_raw_delta_err": raw_delta_err,
             f"{color}_ref_avg": np.array(ref),
             f"{color}_ref_err": np.array(ref_err),
+            f"{color}_raw_ref_avg": np.array(raw_ref),
+            f"{color}_raw_ref_err": np.array(raw_ref_err),
+            f"{color}_uncorrected_avg": raw_delta - raw_ref,
             f"{color}_forward_avg": forward.color,
             f"{color}_forward_err": forward.color_err,
             f"{color}_flipped_avg": flipped.color,
@@ -426,6 +683,25 @@ class TreeCorrStacker:
             f"{color}_forward_npairs": forward.npairs,
             f"{color}_flipped_npairs": flipped.npairs,
         }
+        if has_random:
+            result.update(
+                {
+                    f"{color}_random_delta_avg": random_delta,
+                    f"{color}_random_delta_err": random_delta_err,
+                    f"{color}_random_ref_avg": np.array(random_ref),
+                    f"{color}_random_ref_err": np.array(random_ref_err),
+                    f"{color}_random_forward_avg": random_forward.color,
+                    f"{color}_random_forward_err": random_forward.color_err,
+                    f"{color}_random_flipped_avg": random_flipped.color,
+                    f"{color}_random_flipped_err": random_flipped.color_err,
+                    f"{color}_random_forward_raw_avg": random_forward.raw,
+                    f"{color}_random_forward_raw_err": random_forward.raw_err,
+                    f"{color}_random_flipped_raw_avg": random_flipped.raw,
+                    f"{color}_random_flipped_raw_err": random_flipped.raw_err,
+                    f"{color}_random_forward_npairs": random_forward.npairs,
+                    f"{color}_random_flipped_npairs": random_flipped.npairs,
+                }
+            )
         if jackknife is not None:
             result.update(
                 {
@@ -443,37 +719,83 @@ class TreeCorrStacker:
         forward: _Profile,
         flipped: _Profile,
         n_bins: int,
+        random_forward: _Profile | None = None,
+        random_flipped: _Profile | None = None,
     ) -> _JackknifeStats | None:
         if not getattr(self, "_use_jackknife", False):
             return None
-        if any(len(corrs) == 0 for corrs in forward.corrs + flipped.corrs):
+        has_random = random_forward is not None or random_flipped is not None
+        if has_random and (random_forward is None or random_flipped is None):
+            raise ValueError("Random correction requires both random profiles")
+
+        all_profile_corrs = forward.corrs + flipped.corrs
+        if has_random:
+            all_profile_corrs += random_forward.corrs + random_flipped.corrs
+        if any(len(corrs) == 0 for corrs in all_profile_corrs):
             return None
 
         corrs = []
-        for forward_corrs, flipped_corrs in zip(forward.corrs, flipped.corrs):
+        iterator = zip(forward.corrs, flipped.corrs)
+        if has_random:
+            iterator = zip(
+                forward.corrs,
+                flipped.corrs,
+                random_forward.corrs,
+                random_flipped.corrs,
+            )
+        for profile_corrs in iterator:
+            forward_corrs = profile_corrs[0]
+            flipped_corrs = profile_corrs[1]
             corrs.extend(forward_corrs)
             corrs.extend(flipped_corrs)
+            if has_random:
+                corrs.extend(profile_corrs[2])
+                corrs.extend(profile_corrs[3])
+
+        def read_forward(corrs: list[Any], i: int) -> tuple[float, int]:
+            return corrs[i].xi[0], i + 1
+
+        def read_flipped(corrs: list[Any], i: int) -> tuple[float, int]:
+            numerator = corrs[i]
+            denominator = corrs[i + 1]
+            i += 2
+            if denominator.weight[0] == 0:
+                return np.nan, i
+            return numerator.weight[0] / denominator.weight[0], i
 
         def estimator(corrs: list[Any]) -> np.ndarray:
             raw_forward = []
             raw_flipped = []
+            raw_random_forward = []
+            raw_random_flipped = []
             i = 0
             for _ in range(n_bins + 1):
-                raw_forward.append(corrs[i].xi[0])
-                i += 1
+                value, i = read_forward(corrs, i)
+                raw_forward.append(value)
 
-                numerator = corrs[i]
-                denominator = corrs[i + 1]
-                i += 2
-                if denominator.weight[0] == 0:
-                    raw_flipped.append(np.nan)
-                else:
-                    raw_flipped.append(numerator.weight[0] / denominator.weight[0])
+                value, i = read_flipped(corrs, i)
+                raw_flipped.append(value)
+
+                if has_random:
+                    value, i = read_forward(corrs, i)
+                    raw_random_forward.append(value)
+
+                    value, i = read_flipped(corrs, i)
+                    raw_random_flipped.append(value)
 
             forward_color = self._raw_to_color(np.array(raw_forward), mode)
             flipped_color = self._raw_to_color(np.array(raw_flipped), mode)
-            delta = forward_color[:-1] - flipped_color[:-1]
-            ref = forward_color[-1] - flipped_color[-1]
+            delta = forward_color - flipped_color
+            if has_random:
+                random_forward_color = self._raw_to_color(
+                    np.array(raw_random_forward), mode
+                )
+                random_flipped_color = self._raw_to_color(
+                    np.array(raw_random_flipped), mode
+                )
+                delta -= random_forward_color - random_flipped_color
+            ref = delta[-1]
+            delta = delta[:-1]
             return delta - ref
 
         samples, _ = treecorr.build_multi_cov_design_matrix(
@@ -503,6 +825,26 @@ class TreeCorrStacker:
         if self._bg_pos_cat is None:
             self._bg_pos_cat = self._background_catalog()
         return self._bg_pos_cat
+
+    def _random_foreground_position_catalog(self) -> Any:
+        if self._random_foreground is None or self._random_foreground_da is None:
+            raise RuntimeError("Random foreground catalog has not been generated")
+        if self._random_fg_pos_cat is None:
+            self._random_fg_pos_cat = self._catalog(
+                self._random_foreground,
+                self._random_foreground_da,
+            )
+        return self._random_fg_pos_cat
+
+    def _random_background_position_catalog(self) -> Any:
+        if self._random_background is None:
+            raise RuntimeError("Random background catalog has not been generated")
+        if self._random_bg_pos_cat is None:
+            self._random_bg_pos_cat = self._catalog(
+                self._random_background,
+                np.ones(len(self._random_background)),
+            )
+        return self._random_bg_pos_cat
 
     def _foreground_catalog(
         self,
