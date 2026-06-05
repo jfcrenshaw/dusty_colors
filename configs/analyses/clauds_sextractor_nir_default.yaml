@@ -1,29 +1,23 @@
-id: clauds_sextractor_optical_default_rand100
-sample: configs/samples/clauds_sextractor_optical_default.yaml
+id: clauds_sextractor_nir_default
+sample: configs/samples/clauds_sextractor_nir_default.yaml
 stack:
   colors:
-    - u-g
-    - u-r
-    - u-i
-    - u-z
-    - u-y
-    - g-r
-    - g-i
     - g-z
-    - g-y
+    - u-g
+    - g-r
     - r-i
-    - r-z
-    - r-y
     - i-z
-    - i-y
     - z-y
+    - Yv-J
+    - J-H
+    - H-Ks
   modes: [fcolors]
   r_bin_edges:
     geomspace: { start: 5.0, stop: 1000.0, num: 6 }
   reference_annulus: [2000.0, 4000.0]
   snr_max: 100
   random_correction: true
-  random_multiplier: 100
+  random_multiplier: 5
   random_seed: 42
   jackknife: true
   dust_extinction_fit:
