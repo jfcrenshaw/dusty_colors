@@ -14,7 +14,10 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from dusty_colors.dust_extinction_fit import (  # noqa: E402
+    DEFAULT_FILTER_WAVELENGTHS_UM,
     DustExtinctionFitConfig,
+    color_excess_per_av,
+    color_excess_to_av,
     dust_color_excess_model,
     fit_dust_extinction_law,
     save_stack_dust_extinction_fit,
@@ -58,6 +61,42 @@ def _synthetic_stack_arrays(
 
 @unittest.skipUnless(HAS_DUST_EXTINCTION, "dust_extinction is not installed")
 class DustExtinctionFitTest(unittest.TestCase):
+    def test_color_excess_to_av_inverts_all_rubin_filter_pairs(self) -> None:
+        expected_av = np.array([0.003, 0.01, 0.04])
+
+        for band1 in DEFAULT_FILTER_WAVELENGTHS_UM:
+            for band2 in DEFAULT_FILTER_WAVELENGTHS_UM:
+                if band1 == band2:
+                    continue
+                color = f"{band1}-{band2}"
+                coefficient = color_excess_per_av(
+                    color,
+                    rv=3.1,
+                    foreground_redshift=0.35,
+                )
+                excess = expected_av * coefficient
+
+                av = color_excess_to_av(
+                    excess,
+                    color,
+                    rv=3.1,
+                    foreground_redshift=0.35,
+                )
+
+                np.testing.assert_allclose(av, expected_av, rtol=1.0e-12)
+
+    def test_color_excess_to_av_accepts_scalar(self) -> None:
+        coefficient = color_excess_per_av("g-i", foreground_redshift=0.35)
+
+        av = color_excess_to_av(0.02 * coefficient, "g-i", foreground_redshift=0.35)
+
+        self.assertIsInstance(av, float)
+        self.assertAlmostEqual(av, 0.02)
+
+    def test_color_excess_to_av_rejects_zero_contrast_color(self) -> None:
+        with self.assertRaisesRegex(ValueError, "zero extinction contrast"):
+            color_excess_to_av(0.01, "g-g")
+
     def test_fit_recovers_synthetic_parameters(self) -> None:
         foreground_redshift = 0.35
         results = StackResults(

@@ -21,9 +21,8 @@ sources:
       - Z_BEST68_LOW
       - Z_BEST68_HIGH
       - OBJ_TYPE
-      - CLEAN
+      - MASK
       - EB_V
-      - Z_SPEC
       - OFFSET_MAG_2s
       - MAG_APER_2s_u
       - MAGERR_APER_2s_u
@@ -40,6 +39,8 @@ sources:
       - MAG_APER_2s_y
       - MAGERR_APER_2s_y
     optional_columns:
+      - CLEAN
+      - Z_SPEC
       - MASS_MED
       - MASS_MED_6B
 bands: [u, g, r, i, z, y]

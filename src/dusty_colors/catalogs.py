@@ -368,9 +368,7 @@ class ClaudsSExtractorCatalogAdapter(CatalogAdapter):
         "Z_BEST68_LOW",
         "Z_BEST68_HIGH",
         "OBJ_TYPE",
-        "CLEAN",
         "EB_V",
-        "Z_SPEC",
         "OFFSET_MAG_2s",
     )
 
@@ -394,9 +392,9 @@ class ClaudsSExtractorCatalogAdapter(CatalogAdapter):
             - source["Z_BEST68_LOW"].to_numpy(float)
         )
         out["is_galaxy"] = source["OBJ_TYPE"] == 0
-        out["mask_ok"] = source["CLEAN"].astype(bool)
+        out["mask_ok"] = self.mask_ok(source)
         out["quality_ok"] = True
-        out["spec_z"] = source["Z_SPEC"]
+        out["spec_z"] = source["Z_SPEC"] if "Z_SPEC" in source else np.nan
         out["ebv"] = source["EB_V"]
         out["stellar_mass_log"] = self.stellar_mass_log(source)
 
@@ -422,12 +420,36 @@ class ClaudsSExtractorCatalogAdapter(CatalogAdapter):
             raise ValueError(f"CLAUDS SourceExtractor columns are missing: {missing}")
 
     @staticmethod
+    def mask_ok(source: pd.DataFrame) -> np.ndarray:
+        fallback = None
+        if "MASK" in source:
+            fallback = source["MASK"].to_numpy(float) == 0
+
+        if "CLEAN" not in source:
+            if fallback is None:
+                raise ValueError(
+                    "CLAUDS SourceExtractor columns are missing: ['CLEAN' or 'MASK']"
+                )
+            return fallback
+
+        clean = source["CLEAN"]
+        valid = clean.notna().to_numpy()
+        clean_mask = np.zeros(len(source), dtype=bool)
+        clean_mask[valid] = np.asarray(clean.to_numpy()[valid], dtype=bool)
+        if fallback is None:
+            if not np.all(valid):
+                raise ValueError(
+                    "CLAUDS SourceExtractor column CLEAN has missing values and "
+                    "MASK is unavailable"
+                )
+            return clean_mask
+
+        mask = fallback.copy()
+        mask[valid] = clean_mask[valid]
+        return mask
+
+    @staticmethod
     def stellar_mass_log(source: pd.DataFrame) -> np.ndarray:
-        if "MASS_MED" not in source and "MASS_MED_6B" not in source:
-            raise ValueError(
-                "CLAUDS SourceExtractor columns are missing: "
-                "['MASS_MED' or 'MASS_MED_6B']"
-            )
         values = np.full(len(source), np.nan, dtype=float)
         if "MASS_MED" in source:
             values = source["MASS_MED"].to_numpy(float)

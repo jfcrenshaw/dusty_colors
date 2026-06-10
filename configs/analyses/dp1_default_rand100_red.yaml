@@ -1,14 +1,14 @@
-id: clauds_sextractor_optical_default
-sample: configs/samples/clauds_sextractor_optical_default.yaml
+id: dp1_default_rand100_red
+sample: configs/samples/dp1_default_red.yaml
 stack:
-  colors: [g-z]
+  colors: [g-z, g-r, r-i, i-z]
   modes: [fcolors]
   r_bin_edges:
     geomspace: { start: 5.0, stop: 1000.0, num: 6 }
   reference_annulus: [2000.0, 4000.0]
   snr_max: 100
   random_correction: true
-  random_multiplier: 20
+  random_multiplier: 100
   random_seed: 42
   jackknife: true
   dust_extinction_fit:

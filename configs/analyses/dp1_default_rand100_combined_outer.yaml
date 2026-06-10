@@ -1,0 +1,14 @@
+id: dp1_default_rand100_combined_outer
+sample: configs/samples/dp1_default.yaml
+stack:
+  colors: [g-z, g-r, r-i, i-z]
+  modes: [fcolors]
+  r_bin_edges: [5, 14, 42, 120, 1000]
+  reference_annulus: [2000.0, 4000.0]
+  snr_max: 100
+  random_correction: true
+  random_multiplier: 100
+  random_seed: 42
+  jackknife: true
+  dust_extinction_fit:
+    fixed_rv: 3.1

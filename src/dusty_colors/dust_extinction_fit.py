@@ -393,6 +393,30 @@ def dust_color_excess_model(
     if radial_pivot_kpc <= 0:
         raise ValueError("Dust-extinction radial pivot must be positive")
 
+    color_coefficients = [
+        color_excess_per_av(
+            color,
+            rv=rv,
+            wavelengths_um=wavelengths_um,
+            foreground_redshift=foreground_redshift,
+            law=law,
+        )
+        for color in colors
+    ]
+    radial = amplitude_av_mag * (radius / radial_pivot_kpc) ** alpha
+    return radial * np.asarray(color_coefficients, dtype=float)
+
+
+def color_excess_per_av(
+    color: str | Sequence[str],
+    *,
+    rv: float = 3.1,
+    wavelengths_um: Mapping[str, float] | None = None,
+    foreground_redshift: float = 0.0,
+    law: str = "F99",
+) -> float:
+    """Return ``E(X-Y) / A_V`` for a Rubin-filter color."""
+
     wavelengths = dict(DEFAULT_FILTER_WAVELENGTHS_UM)
     if wavelengths_um is not None:
         wavelengths.update({str(k): float(v) for k, v in wavelengths_um.items()})
@@ -402,12 +426,46 @@ def dust_color_excess_model(
         foreground_redshift=foreground_redshift,
         law=law,
     )
-    color_coefficients = []
-    for color in colors:
+    band1, band2 = parse_color(color)
+    try:
+        return float(ratios[band1] - ratios[band2])
+    except KeyError as exc:
+        known = ", ".join(sorted(ratios))
+        raise ValueError(
+            f"Unknown filter in color {band1}-{band2}; known filters: {known}"
+        ) from exc
+
+
+def color_excess_to_av(
+    color_excess_mag: float | Sequence[float] | np.ndarray,
+    color: str | Sequence[str],
+    *,
+    rv: float = 3.1,
+    wavelengths_um: Mapping[str, float] | None = None,
+    foreground_redshift: float = 0.0,
+    law: str = "F99",
+) -> float | np.ndarray:
+    """Convert ``E(X-Y)`` color excess in magnitudes to ``A_V``."""
+
+    coefficient = color_excess_per_av(
+        color,
+        rv=rv,
+        wavelengths_um=wavelengths_um,
+        foreground_redshift=foreground_redshift,
+        law=law,
+    )
+    if coefficient == 0.0:
         band1, band2 = parse_color(color)
-        color_coefficients.append(ratios[band1] - ratios[band2])
-    radial = amplitude_av_mag * (radius / radial_pivot_kpc) ** alpha
-    return radial * np.asarray(color_coefficients, dtype=float)
+        raise ValueError(
+            f"Color {band1}-{band2} has zero extinction contrast; "
+            "cannot convert E(color) to A_V"
+        )
+
+    values = np.asarray(color_excess_mag, dtype=float)
+    av = values / coefficient
+    if values.ndim == 0:
+        return float(av)
+    return av
 
 
 def band_extinction_ratios(
@@ -736,6 +794,8 @@ __all__ = [
     "DustExtinctionFitResult",
     "StackFitData",
     "band_extinction_ratios",
+    "color_excess_per_av",
+    "color_excess_to_av",
     "dust_color_excess_model",
     "fit_dust_extinction_law",
     "format_dust_extinction_fit",

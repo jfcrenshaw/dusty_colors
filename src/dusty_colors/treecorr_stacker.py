@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields as dataclass_fields
 from pathlib import Path
 from typing import Any, Literal
 
@@ -169,14 +169,25 @@ class TreeCorrStacker:
         config = dict(stack_config)
         if "reference_annulus" in config:
             config["reference_annulus"] = tuple(config["reference_annulus"])
+        stacker_kwargs = cls._init_kwargs(config)
         return cls(
             foreground=pd.read_parquet(sample_dir / "foreground.parquet"),
             background=pd.read_parquet(sample_dir / "background.parquet"),
             footprint=footprint,
             out_dir=Path(out_dir),
             config=config,
-            **config,
+            **stacker_kwargs,
         )
+
+    @classmethod
+    def _init_kwargs(cls, config: Mapping[str, Any]) -> dict[str, Any]:
+        blocked = {"foreground", "background", "footprint", "out_dir", "config"}
+        allowed = {
+            field.name
+            for field in dataclass_fields(cls)
+            if field.init and field.name not in blocked
+        }
+        return {key: value for key, value in config.items() if key in allowed}
 
     def run(self, *, force: bool = False) -> None:
         """Run all requested stack modes."""

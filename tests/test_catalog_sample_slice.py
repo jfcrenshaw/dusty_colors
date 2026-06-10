@@ -6,6 +6,7 @@ import sys
 from tempfile import TemporaryDirectory
 import types
 import unittest
+import warnings
 from unittest.mock import patch
 
 import numpy as np
@@ -339,6 +340,54 @@ class CatalogSampleSliceTest(unittest.TestCase):
             fallback["stellar_mass_log"],
             [10.0, 9.4, 9.7],
         )
+
+    def test_clauds_adapter_handles_6band_missing_optional_columns(self) -> None:
+        raw = pd.DataFrame(
+            {
+                "ID": [1, 2, 3],
+                "RA": [242.0, 242.1, 242.2],
+                "DEC": [54.0, 54.1, 54.2],
+                "field": ["ELAIS-N1"] * 3,
+                "ZPHOT": [0.4, 0.8, 1.0],
+                "Z_BEST68_LOW": [0.35, 0.75, 0.95],
+                "Z_BEST68_HIGH": [0.45, 0.85, 1.05],
+                "OBJ_TYPE": [0, 0, 0],
+                "MASK": [0, 1, 0],
+                "CLEAN": [np.nan, False, True],
+                "EB_V": [0.01, 0.02, 0.03],
+                "OFFSET_MAG_2s": [0.1, 0.2, 0.3],
+                "MAG_APER_2s_g": [24.0, 24.5, 25.0],
+                "MAGERR_APER_2s_g": [0.03, 0.04, 0.05],
+            }
+        )
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", FutureWarning)
+            catalog = ClaudsSExtractorCatalogAdapter(
+                {"bands": ["g"], "photometry": "flux", "mag_kind": "APER_2s"}
+            ).adapt(raw)
+
+        self.assertEqual(caught, [])
+
+        self.assertEqual(list(catalog["mask_ok"]), [True, False, True])
+        self.assertTrue(np.isnan(catalog["spec_z"]).all())
+        self.assertTrue(np.isnan(catalog["stellar_mass_log"]).all())
+
+        without_clean = ClaudsSExtractorCatalogAdapter(
+            {"bands": ["g"], "photometry": "flux", "mag_kind": "APER_2s"}
+        ).adapt(raw.drop(columns=["CLEAN"]))
+        self.assertEqual(list(without_clean["mask_ok"]), [True, False, True])
+
+    def test_treecorr_stacker_ignores_analysis_only_stack_options(self) -> None:
+        kwargs = TreeCorrStacker._init_kwargs(
+            {
+                "colors": ["g-r"],
+                "random_seed": 11,
+                "dust_extinction_fit": {"fixed_rv": 3.1},
+            }
+        )
+
+        self.assertEqual(kwargs, {"colors": ["g-r"], "random_seed": 11})
 
     def test_selection_applies_minimal_masks_and_redshift_windows(self) -> None:
         catalog = pd.DataFrame(
