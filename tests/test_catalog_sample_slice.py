@@ -548,6 +548,54 @@ class CatalogSampleSliceTest(unittest.TestCase):
         self.assertEqual(list(samples["background"]["object_id"]), [3])
         self.assertEqual(list(samples["footprint"]["object_id"]), [1, 3])
 
+    def test_drop_shallowest_combines_band_masks_before_dropping(self) -> None:
+        def fluxerr_from_depth(depth: float) -> float:
+            return 10 ** ((31.4 - depth) / 2.5) / 10.0
+
+        depths = np.arange(21.0, 31.0)
+        depth_fluxerrs = [fluxerr_from_depth(depth) for depth in depths]
+        catalog = pd.DataFrame(
+            {
+                "object_id": list(range(1, 11)),
+                "ra": np.arange(10.0),
+                "dec": np.zeros(10),
+                "pixel": list(range(100, 110)),
+                "z_phot": [0.3] * 5 + [0.9] * 5,
+                "is_galaxy": [True] * 10,
+                "mask_ok": [True] * 10,
+                "quality_ok": [True] * 10,
+                "flux_g": [10.0] * 10,
+                "fluxerr_g": [1.0] * 10,
+                "flux_r": [10.0] * 10,
+                "fluxerr_r": [1.0] * 10,
+                "cmodel_fluxerr_g": depth_fluxerrs,
+                "cmodel_fluxerr_r": depth_fluxerrs,
+            }
+        )
+        config = {
+            "selection": {
+                "foreground_z": [0.2, 0.5],
+                "background_z": [0.7, 1.4],
+                "pixel_depth_cuts": {
+                    "fluxerr_template": "cmodel_fluxerr_{band}",
+                    "depth_sigma": 10,
+                    "drop_shallowest": {
+                        "bands": ["g", "r"],
+                        "fraction": 0.2,
+                        "unique_pixels": True,
+                    },
+                },
+            },
+        }
+
+        samples = select_samples(catalog, config, bands=["g", "r"], photometry="flux")
+
+        self.assertEqual(list(samples["foreground"]["object_id"]), [3, 4, 5])
+        self.assertEqual(
+            list(samples["background"]["object_id"]),
+            [6, 7, 8, 9, 10],
+        )
+
     def test_selection_can_reassign_jackknife_after_sample_cuts(self) -> None:
         catalog = pd.DataFrame(
             {
@@ -1009,8 +1057,11 @@ class CatalogSampleSliceTest(unittest.TestCase):
                 color_err=err_array,
                 weight=np.ones_like(color_array),
                 npairs=np.ones_like(color_array),
+                ref_raw=ref_color,
+                ref_raw_err=ref_err,
                 ref_color=ref_color,
                 ref_color_err=ref_err,
+                ref_npairs=1.0,
                 corrs=[],
             )
 
@@ -1041,8 +1092,99 @@ class CatalogSampleSliceTest(unittest.TestCase):
         self.assertEqual(float(result["g-i_ref_avg"]), 0.4)
         np.testing.assert_allclose(result["g-i_avg"], [0.4, 1.2])
         np.testing.assert_allclose(result["g-i_uncorrected_avg"], [0.5, 1.5])
+        self.assertEqual(float(result["g-i_forward_ref_avg"]), 0.5)
+        self.assertEqual(float(result["g-i_forward_ref_raw_avg"]), 0.5)
+        self.assertEqual(float(result["g-i_random_forward_ref_avg"]), 0.1)
+        self.assertEqual(float(result["g-i_random_forward_ref_raw_avg"]), 0.1)
         self.assertNotIn("g-i_flipped_avg", result)
+        self.assertNotIn("g-i_flipped_ref_avg", result)
         self.assertNotIn("g-i_random_flipped_avg", result)
+        self.assertNotIn("g-i_random_flipped_ref_avg", result)
+
+    def test_treecorr_stacker_saves_component_apertures_for_plot_variants(
+        self,
+    ) -> None:
+        def profile(
+            color: list[float],
+            err: list[float],
+            ref_color: float,
+            ref_err: float,
+        ) -> types.SimpleNamespace:
+            color_array = np.asarray(color, dtype=float)
+            err_array = np.asarray(err, dtype=float)
+            return types.SimpleNamespace(
+                raw=color_array,
+                raw_err=err_array,
+                color=color_array,
+                color_err=err_array,
+                weight=np.ones_like(color_array),
+                npairs=np.ones_like(color_array),
+                ref_raw=ref_color,
+                ref_raw_err=ref_err,
+                ref_color=ref_color,
+                ref_color_err=ref_err,
+                ref_npairs=1.0,
+                corrs=[],
+            )
+
+        stacker = TreeCorrStacker(
+            foreground=pd.DataFrame(),
+            background=pd.DataFrame(),
+            out_dir="unused",
+            flipped_correction=True,
+        )
+        bins = [
+            types.SimpleNamespace(center=10.0),
+            types.SimpleNamespace(center=20.0),
+        ]
+        forward = profile([10.0, 20.0], [1.0, 2.0], 1.0, 0.1)
+        flipped = profile([3.0, 5.0], [0.3, 0.5], 0.5, 0.05)
+        random_forward = profile([2.0, 4.0], [0.2, 0.4], 0.25, 0.025)
+        random_flipped = profile([0.5, 1.0], [0.05, 0.1], 0.125, 0.0125)
+
+        result = stacker._result(
+            "g-i",
+            bins,
+            "mcolors",
+            forward,
+            flipped,
+            random_forward,
+            random_flipped,
+        )
+
+        uncorrected = result["g-i_forward_avg"] - result["g-i_forward_ref_avg"]
+        flip_corrected = (
+            result["g-i_forward_avg"]
+            - result["g-i_flipped_avg"]
+            - (result["g-i_forward_ref_avg"] - result["g-i_flipped_ref_avg"])
+        )
+        random_corrected = (
+            result["g-i_forward_avg"]
+            - result["g-i_random_forward_avg"]
+            - (
+                result["g-i_forward_ref_avg"]
+                - result["g-i_random_forward_ref_avg"]
+            )
+        )
+        flip_and_random_corrected = (
+            result["g-i_forward_avg"]
+            - result["g-i_flipped_avg"]
+            - result["g-i_random_forward_avg"]
+            + result["g-i_random_flipped_avg"]
+            - (
+                result["g-i_forward_ref_avg"]
+                - result["g-i_flipped_ref_avg"]
+                - result["g-i_random_forward_ref_avg"]
+                + result["g-i_random_flipped_ref_avg"]
+            )
+        )
+
+        np.testing.assert_allclose(uncorrected, [9.0, 19.0])
+        np.testing.assert_allclose(flip_corrected, [6.5, 14.5])
+        np.testing.assert_allclose(random_corrected, [7.25, 15.25])
+        np.testing.assert_allclose(flip_and_random_corrected, result["g-i_avg"])
+        np.testing.assert_allclose(result["g-i_avg"], [5.125, 11.625])
+        self.assertEqual(float(result["g-i_random_flipped_ref_raw_avg"]), 0.125)
 
 
 if __name__ == "__main__":

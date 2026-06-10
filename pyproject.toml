@@ -20,6 +20,7 @@ dependencies = [
     "isort>=6.0",
     "flake8>=7.0",
     "mypy>=1.5",
+    "pytest>=8.0",
     "pyarrow>=21.0",
     "healpy>=1.19",
     "healsparse>=1.11",

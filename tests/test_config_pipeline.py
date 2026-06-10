@@ -243,11 +243,11 @@ class ConfigPipelineTest(unittest.TestCase):
 
     def test_clauds_analysis_graphs_resolve(self) -> None:
         optical = load_resolved_config(
-            ROOT / "configs/analyses/clauds_sextractor_optical_default_rand100.yaml",
+            ROOT / "configs/analyses/clauds_sextractor_optical_default.yaml",
             root=ROOT,
         )
         nir = load_resolved_config(
-            ROOT / "configs/analyses/clauds_sextractor_nir_default_rand100.yaml",
+            ROOT / "configs/analyses/clauds_sextractor_nir_default.yaml",
             root=ROOT,
         )
 
@@ -255,25 +255,28 @@ class ConfigPipelineTest(unittest.TestCase):
         self.assertEqual(optical.sample.id, "clauds_sextractor_optical_default")
         self.assertEqual(
             optical.analysis.id,
-            "clauds_sextractor_optical_default_rand100",
+            "clauds_sextractor_optical_default",
         )
         self.assertEqual(optical.catalog.data["bands"], ["u", "g", "r", "i", "z", "y"])
         self.assertEqual(optical.catalog.data["photometry"], "flux")
         self.assertIn("fluxerr_template", optical.sample.data["selection"]["snr_min"])
         self.assertFalse(optical.catalog.data["enrichments"]["kcorrect"]["enabled"])
-        self.assertIn("u-g", optical.analysis.data["stack"]["colors"])
-        self.assertIn("z-y", optical.analysis.data["stack"]["colors"])
+        self.assertEqual(optical.analysis.data["stack"]["colors"], ["g-z"])
         self.assertEqual(optical.analysis.data["stack"]["modes"], ["fcolors"])
+        self.assertEqual(optical.analysis.data["stack"]["random_multiplier"], 20)
         self.assertEqual(optical.sample.data["jackknife"]["regions_per_field"], 3)
 
         self.assertEqual(nir.catalog.id, "clauds_sextractor_nir")
+        self.assertEqual(nir.sample.id, "clauds_sextractor_nir_default")
+        self.assertEqual(nir.analysis.id, "clauds_sextractor_nir_default")
         self.assertEqual(nir.catalog.data["extra_bands"], ["Yv", "J", "H", "Ks"])
         self.assertEqual(
             [item["field"] for item in nir.catalog.data["sources"]["objects"]["files"]],
             ["E-COSMOS", "XMM-LSS"],
         )
-        self.assertIn("u-Yv", nir.analysis.data["stack"]["colors"])
+        self.assertIn("Yv-J", nir.analysis.data["stack"]["colors"])
         self.assertIn("H-Ks", nir.analysis.data["stack"]["colors"])
+        self.assertEqual(nir.analysis.data["stack"]["random_multiplier"], 5)
         np.testing.assert_allclose(
             nir.analysis.data["stack"]["r_bin_edges"],
             np.geomspace(5.0, 1000.0, 6),

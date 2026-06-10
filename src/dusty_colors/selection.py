@@ -518,16 +518,19 @@ class PixelDepthCuts:
                 "selection.pixel_depth_cuts.drop_shallowest.fraction must be in [0, 1)"
             )
         unique = bool(drop_shallowest.get("unique_pixels", True))
+        base_mask = mask.copy()
+        drop_mask = np.zeros(len(self.catalog), dtype=bool)
         for band in bands:
             depth = self.depth_for(band)
-            values = depth[mask & np.isfinite(depth)]
+            finite = base_mask & np.isfinite(depth)
+            values = depth[finite]
             if unique:
                 values = np.unique(values)
             if len(values) == 0:
                 return np.zeros(len(self.catalog), dtype=bool)
             threshold = float(np.nanquantile(values, q))
-            mask &= depth > threshold
-        return mask
+            drop_mask |= base_mask & (~np.isfinite(depth) | (depth <= threshold))
+        return mask & ~drop_mask
 
 
 def _pixel_depth_cut_mask(

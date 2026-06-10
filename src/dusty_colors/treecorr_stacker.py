@@ -44,8 +44,11 @@ class _Profile:
     color_err: np.ndarray
     weight: np.ndarray
     npairs: np.ndarray
+    ref_raw: float
+    ref_raw_err: float
     ref_color: float
     ref_color_err: float
+    ref_npairs: float
     corrs: list[tuple[Any, ...]]
 
 
@@ -534,10 +537,10 @@ class TreeCorrStacker:
         random: bool = False,
     ) -> _Profile:
         value, err, good = observable
-        bin_results = [
-            self._stack_bin(value, err, good, b, direction, random=random)
-            for b in bins + [ref_bin]
-        ]
+        bin_results = self._stack_bins(value, err, good, bins, direction, random=random)
+        bin_results.append(
+            self._stack_bin(value, err, good, ref_bin, direction, random=random)
+        )
         rows = np.array(
             [
                 (result.raw, result.raw_err, result.weight, result.npairs)
@@ -557,10 +560,58 @@ class TreeCorrStacker:
             color_err=color_err,
             weight=rows[:-1, 2],
             npairs=rows[:-1, 3],
+            ref_raw=float(rows[-1, 0]),
+            ref_raw_err=float(rows[-1, 1]),
             ref_color=float(ref_color[0]),
             ref_color_err=float(ref_color_err[0]),
+            ref_npairs=float(rows[-1, 3]),
             corrs=[result.corrs for result in bin_results],
         )
+
+    def _stack_bins(
+        self,
+        value: np.ndarray,
+        err: np.ndarray,
+        good: np.ndarray,
+        bins: list[_RadialBin],
+        direction: StackDirection,
+        random: bool = False,
+    ) -> list[_BinResult]:
+        if not self._can_batch_radial_bins(bins):
+            return [
+                self._stack_bin(value, err, good, b, direction, random=random)
+                for b in bins
+            ]
+        if not np.any(good):
+            return [_BinResult(np.nan, np.nan, 0.0, 0.0, ()) for _ in bins]
+
+        mean, count_weight, npairs, _ = self._pair_means(
+            value, good, bins, direction, random=random
+        )
+        mean2, _, _, _ = self._pair_means(
+            value**2, good, bins, direction, random=random
+        )
+
+        results = []
+        for i, radial_bin in enumerate(bins):
+            if (
+                count_weight[i] == 0
+                or not np.isfinite(mean[i])
+                or not np.isfinite(mean2[i])
+            ):
+                results.append(_BinResult(np.nan, np.nan, 0.0, npairs[i], ()))
+                continue
+
+            variance_floor = max(mean2[i] - mean[i] ** 2, 0.0)
+            weight = np.zeros_like(err)
+            weight[good] = 1.0 / (err[good] ** 2 + variance_floor)
+
+            avg, weight_sum, weighted_npairs, corrs = self._pair_mean(
+                value, good, radial_bin, direction, weight, random=random
+            )
+            avg_err = np.sqrt(1.0 / weight_sum) if weight_sum > 0 else np.nan
+            results.append(_BinResult(avg, avg_err, weight_sum, weighted_npairs, corrs))
+        return results
 
     def _stack_bin(
         self,
@@ -654,6 +705,83 @@ class TreeCorrStacker:
             numerator.weight[0] / denominator.weight[0],
             denominator.weight[0],
             denominator.npairs[0],
+            (numerator, denominator),
+        )
+
+    def _pair_means(
+        self,
+        value: np.ndarray,
+        good: np.ndarray,
+        radial_bins: list[_RadialBin],
+        direction: StackDirection,
+        weight: np.ndarray | None = None,
+        random: bool = False,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[Any, ...]]:
+        if not radial_bins:
+            empty = np.array([], dtype=float)
+            return empty, empty, empty, ()
+        if not np.any(good):
+            n_bins = len(radial_bins)
+            return (
+                np.full(n_bins, np.nan, dtype=float),
+                np.zeros(n_bins, dtype=float),
+                np.zeros(n_bins, dtype=float),
+                (),
+            )
+
+        if direction == "forward":
+            source = self._background_catalog(
+                good, k=value[good], w=None if weight is None else weight[good]
+            )
+            corr = self._nk_bins(radial_bins)
+            corr.process(
+                (
+                    self._random_foreground_position_catalog()
+                    if random
+                    else self._foreground_position_catalog()
+                ),
+                source,
+                metric="Rlens",
+                num_threads=self.num_threads,
+            )
+            return (
+                self._safe_means(corr.xi, corr.weight),
+                corr.weight,
+                corr.npairs,
+                (corr,),
+            )
+
+        pair_weight = np.ones(np.sum(good)) if weight is None else weight[good]
+        denominator = self._nn_bins(radial_bins)
+        denominator.process(
+            self._foreground_catalog(good, w=pair_weight),
+            (
+                self._random_background_position_catalog()
+                if random
+                else self._background_position_catalog()
+            ),
+            metric="Rlens",
+            num_threads=self.num_threads,
+        )
+
+        numerator = self._nn_bins(radial_bins)
+        numerator.process(
+            self._foreground_catalog(good, w=pair_weight * value[good]),
+            (
+                self._random_background_position_catalog()
+                if random
+                else self._background_position_catalog()
+            ),
+            metric="Rlens",
+            num_threads=self.num_threads,
+        )
+        mean = np.full(len(radial_bins), np.nan, dtype=float)
+        has_weight = denominator.weight > 0
+        mean[has_weight] = numerator.weight[has_weight] / denominator.weight[has_weight]
+        return (
+            mean,
+            denominator.weight,
+            denominator.npairs,
             (numerator, denominator),
         )
 
@@ -804,6 +932,11 @@ class TreeCorrStacker:
             f"{color}_forward_raw_avg": forward.raw,
             f"{color}_forward_raw_err": forward.raw_err,
             f"{color}_forward_npairs": forward.npairs,
+            f"{color}_forward_ref_avg": np.array(forward.ref_color),
+            f"{color}_forward_ref_err": np.array(forward.ref_color_err),
+            f"{color}_forward_ref_raw_avg": np.array(forward.ref_raw),
+            f"{color}_forward_ref_raw_err": np.array(forward.ref_raw_err),
+            f"{color}_forward_ref_npairs": np.array(forward.ref_npairs),
         }
         if use_flipped:
             result.update(
@@ -813,6 +946,11 @@ class TreeCorrStacker:
                     f"{color}_flipped_raw_avg": flipped.raw,
                     f"{color}_flipped_raw_err": flipped.raw_err,
                     f"{color}_flipped_npairs": flipped.npairs,
+                    f"{color}_flipped_ref_avg": np.array(flipped.ref_color),
+                    f"{color}_flipped_ref_err": np.array(flipped.ref_color_err),
+                    f"{color}_flipped_ref_raw_avg": np.array(flipped.ref_raw),
+                    f"{color}_flipped_ref_raw_err": np.array(flipped.ref_raw_err),
+                    f"{color}_flipped_ref_npairs": np.array(flipped.ref_npairs),
                 }
             )
         if estimate.random_delta is not None:
@@ -827,6 +965,21 @@ class TreeCorrStacker:
                     f"{color}_random_forward_raw_avg": random_forward.raw,
                     f"{color}_random_forward_raw_err": random_forward.raw_err,
                     f"{color}_random_forward_npairs": random_forward.npairs,
+                    f"{color}_random_forward_ref_avg": np.array(
+                        random_forward.ref_color
+                    ),
+                    f"{color}_random_forward_ref_err": np.array(
+                        random_forward.ref_color_err
+                    ),
+                    f"{color}_random_forward_ref_raw_avg": np.array(
+                        random_forward.ref_raw
+                    ),
+                    f"{color}_random_forward_ref_raw_err": np.array(
+                        random_forward.ref_raw_err
+                    ),
+                    f"{color}_random_forward_ref_npairs": np.array(
+                        random_forward.ref_npairs
+                    ),
                 }
             )
             if use_flipped:
@@ -837,6 +990,21 @@ class TreeCorrStacker:
                         f"{color}_random_flipped_raw_avg": random_flipped.raw,
                         f"{color}_random_flipped_raw_err": random_flipped.raw_err,
                         f"{color}_random_flipped_npairs": random_flipped.npairs,
+                        f"{color}_random_flipped_ref_avg": np.array(
+                            random_flipped.ref_color
+                        ),
+                        f"{color}_random_flipped_ref_err": np.array(
+                            random_flipped.ref_color_err
+                        ),
+                        f"{color}_random_flipped_ref_raw_avg": np.array(
+                            random_flipped.ref_raw
+                        ),
+                        f"{color}_random_flipped_ref_raw_err": np.array(
+                            random_flipped.ref_raw_err
+                        ),
+                        f"{color}_random_flipped_ref_npairs": np.array(
+                            random_flipped.ref_npairs
+                        ),
                     }
                 )
         if estimate.jackknife is not None:
@@ -1270,6 +1438,12 @@ class TreeCorrStacker:
     def _nn(self, radial_bin: _RadialBin) -> Any:
         return treecorr.NNCorrelation(**self._corr_kwargs(radial_bin))
 
+    def _nk_bins(self, radial_bins: list[_RadialBin]) -> Any:
+        return treecorr.NKCorrelation(**self._corr_kwargs_bins(radial_bins))
+
+    def _nn_bins(self, radial_bins: list[_RadialBin]) -> Any:
+        return treecorr.NNCorrelation(**self._corr_kwargs_bins(radial_bins))
+
     def _corr_kwargs(self, radial_bin: _RadialBin) -> dict[str, Any]:
         return {
             "min_sep": radial_bin.lo,
@@ -1278,6 +1452,27 @@ class TreeCorrStacker:
             "bin_type": "Log",
             "bin_slop": self.bin_slop,
         }
+
+    def _corr_kwargs_bins(self, radial_bins: list[_RadialBin]) -> dict[str, Any]:
+        return {
+            "min_sep": radial_bins[0].lo,
+            "max_sep": radial_bins[-1].hi,
+            "nbins": len(radial_bins),
+            "bin_type": "Log",
+            "bin_slop": self.bin_slop,
+        }
+
+    def _can_batch_radial_bins(self, radial_bins: list[_RadialBin]) -> bool:
+        if len(radial_bins) < 2:
+            return False
+        edges = np.array(
+            [radial_bins[0].lo] + [radial_bin.hi for radial_bin in radial_bins],
+            dtype=float,
+        )
+        if np.any(edges <= 0):
+            return False
+        log_steps = np.diff(np.log(edges))
+        return bool(np.allclose(log_steps, log_steps[0], rtol=1.0e-10, atol=1.0e-12))
 
     def _stack_file(self, mode: ColorMode) -> Path:
         return self.out_dir / f"stack_{mode}.npz"
@@ -1324,6 +1519,14 @@ class TreeCorrStacker:
 
     def _safe_mean(self, value: float, weight: float) -> float:
         return np.nan if weight == 0 or not np.isfinite(value) else float(value)
+
+    def _safe_means(self, value: np.ndarray, weight: np.ndarray) -> np.ndarray:
+        value = np.asarray(value, dtype=float)
+        weight = np.asarray(weight, dtype=float)
+        out = np.full_like(value, np.nan, dtype=float)
+        good = (weight != 0) & np.isfinite(value)
+        out[good] = value[good]
+        return out
 
     def _bin_centers(self, bins: list[_RadialBin]) -> np.ndarray:
         return np.array([radial_bin.center for radial_bin in bins])
