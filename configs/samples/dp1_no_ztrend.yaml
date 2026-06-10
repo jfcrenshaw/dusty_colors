@@ -1,4 +1,4 @@
-id: dp1_default_blue
+id: dp1_no_ztrend
 catalog: configs/catalogs/dp1.yaml
 selection:
   foreground_z: [0.2, 0.5]
@@ -17,19 +17,14 @@ selection:
       band: r
       magnitude: 24.0
     drop_shallowest:
-      bands: [u, g, i, z, y]
+      bands: [g, i, z]
       fraction: 0.05
       unique_pixels: true
   snr_min:
     flux_template: cmodel_flux_{band}
     fluxerr_template: cmodel_fluxerr_{band}
     bands:
-      u: 1
-      g: 5
-      r: 10
-      i: 5
-      z: 5
-      y: 1
+      r: 20
   blendedness_max:
     column: blendedness_i
     value: 0.42
@@ -41,7 +36,6 @@ selection:
   foreground_query: >-
     photoz_sigma_fzboost < 0.1 and photoz_sigma_lephare < 0.1
     and z_phot_diff < 0.1 * (1 + z_phot)
-    and (absmag_g - absmag_r) < 0.5
   background_query: >-
     photoz_sigma_fzboost < 0.1 and photoz_sigma_lephare < 0.1
     and z_phot_diff < 0.1 * (1 + z_phot)
@@ -56,7 +50,7 @@ cleaning:
   background:
     enabled: true
     column_redshift_trend:
-      enabled: true
+      enabled: false
       columns:
         - flux_g
         - flux_r
