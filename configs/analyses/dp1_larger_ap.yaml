@@ -1,0 +1,12 @@
+id: dp1_larger_ap
+sample: configs/samples/dp1_default.yaml
+stack:
+  colors: [g-z, g-r, r-i, i-z]
+  modes: [fcolors]
+  r_bin_edges: [10, 15, 40, 120, 350, 1000]
+  reference_annulus: [2500.0, 4500.0]
+  snr_max: 100
+  random_correction: true
+  random_multiplier: 100
+  random_seed: 42
+  jackknife: true
