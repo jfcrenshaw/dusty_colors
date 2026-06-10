@@ -60,20 +60,7 @@ def _write_graph(root: Path) -> Path:
 
 def _stack_arrays(colors: tuple[str, ...] = ("g-i", "g-r", "r-i")) -> dict:
     radius = np.geomspace(5.0, 100.0, 4)
-    radial_edges = np.geomspace(5.0, 160.0, 5)
-    arrays = {
-        "diagnostic_radial_bin_edges": radial_edges,
-        "diagnostic_radial_bin_centers": radius,
-        "diagnostic_photoz_bin_edges": np.array([0.6, 0.9, 1.2, 1.5]),
-        "diagnostic_photoz_counts": np.array(
-            [
-                [10.0, 3.0, 1.0],
-                [8.0, 4.0, 2.0],
-                [6.0, 5.0, 3.0],
-                [4.0, 6.0, 4.0],
-            ]
-        ),
-    }
+    arrays = {}
     for index, color in enumerate(colors):
         signal = np.array([0.08, 0.03, 0.012, 0.006]) * (index + 1)
         err = signal * 0.2
@@ -93,6 +80,30 @@ def _stack_arrays(colors: tuple[str, ...] = ("g-i", "g-r", "r-i")) -> dict:
                 f"{color}_jackknife_avg": samples.mean(axis=0),
                 f"{color}_jackknife_err": err,
                 f"{color}_jackknife_samples": samples,
+            }
+        )
+    return arrays
+
+
+def _diagnostic_arrays(colors: tuple[str, ...] = ("g-i", "g-r", "r-i")) -> dict:
+    radius = np.geomspace(5.0, 100.0, 4)
+    radial_edges = np.geomspace(5.0, 160.0, 5)
+    arrays = {
+        "diagnostic_radial_bin_edges": radial_edges,
+        "diagnostic_radial_bin_centers": radius,
+        "diagnostic_photoz_bin_edges": np.array([0.6, 0.9, 1.2, 1.5]),
+        "diagnostic_photoz_counts": np.array(
+            [
+                [10.0, 3.0, 1.0],
+                [8.0, 4.0, 2.0],
+                [6.0, 5.0, 3.0],
+                [4.0, 6.0, 4.0],
+            ]
+        ),
+    }
+    for color in colors:
+        arrays.update(
+            {
                 f"{color}_diagnostic_color_bin_edges": np.array([-0.5, 0.0, 0.5, 1.0]),
                 f"{color}_diagnostic_color_counts": np.array(
                     [
@@ -118,12 +129,18 @@ class PlottingTest(unittest.TestCase):
             stack_dir = root / "results/stacks/dp1_default"
             stack_dir.mkdir(parents=True)
             np.savez_compressed(stack_dir / "stack_fcolors.npz", **_stack_arrays())
+            np.savez_compressed(
+                stack_dir / "stack_fcolors_diagnostics.npz",
+                **_diagnostic_arrays(),
+            )
 
             results = load_stack_results(analysis_path, root=root)
 
             self.assertEqual(results.mode, "fcolors")
             self.assertEqual(results.colors, ("g-i", "g-r", "r-i"))
             self.assertEqual(results.first_color, "g-i")
+            self.assertIn("diagnostic_photoz_counts", results.diagnostics)
+            self.assertNotIn("diagnostic_photoz_counts", results.arrays)
 
     def test_plot_first_color_jackknife_is_square_and_log_scaled(self) -> None:
         results = StackResults(
@@ -131,6 +148,7 @@ class PlottingTest(unittest.TestCase):
             mode="fcolors",
             colors=("g-i", "g-r"),
             arrays=_stack_arrays(("g-i", "g-r")),
+            diagnostics=_diagnostic_arrays(("g-i", "g-r")),
         )
 
         fig = plot_first_color_jackknife(results)
@@ -164,6 +182,7 @@ class PlottingTest(unittest.TestCase):
             mode="fcolors",
             colors=("g-i", "g-r"),
             arrays=_stack_arrays(("g-i", "g-r")),
+            diagnostics=_diagnostic_arrays(("g-i", "g-r")),
         )
 
         fig = plot_photoz_radial_distributions(results)
@@ -182,6 +201,7 @@ class PlottingTest(unittest.TestCase):
             mode="fcolors",
             colors=("g-i", "g-r"),
             arrays=_stack_arrays(("g-i", "g-r")),
+            diagnostics=_diagnostic_arrays(("g-i", "g-r")),
         )
 
         with TemporaryDirectory() as tmp:

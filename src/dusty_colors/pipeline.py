@@ -225,10 +225,7 @@ def build_stage_specs(
             kind="stack",
             config=resolved.analysis,
             output_dir=stack_dir,
-            expected_outputs=tuple(
-                stack_dir / f"stack_{mode}.npz"
-                for mode in stack_modes(resolved.analysis)
-            ),
+            expected_outputs=stack_expected_outputs(resolved.analysis, stack_dir),
             input_hashes=stack_input_hashes,
             stage_hash=stack_hash,
         ),
@@ -251,6 +248,23 @@ def stack_modes(analysis: StageConfig) -> tuple[str, ...]:
     if not isinstance(modes, (list, tuple)):
         raise PipelineError("stack.modes must be a list when provided")
     return tuple(str(mode) for mode in modes)
+
+
+def stack_expected_outputs(analysis: StageConfig, stack_dir: Path) -> tuple[Path, ...]:
+    """Return required stack files for every configured output mode."""
+
+    stack = analysis.data.get("stack", {})
+    diagnostic_plots = True
+    if isinstance(stack, Mapping):
+        diagnostic_plots = bool(stack.get("diagnostic_plots", True))
+
+    outputs: list[Path] = []
+    for mode in stack_modes(analysis):
+        outputs.append(stack_dir / f"stack_{mode}.npz")
+        outputs.append(stack_dir / f"stack_{mode}_provenance.npz")
+        if diagnostic_plots:
+            outputs.append(stack_dir / f"stack_{mode}_diagnostics.npz")
+    return tuple(outputs)
 
 
 def run_stage(

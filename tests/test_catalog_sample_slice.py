@@ -1078,7 +1078,7 @@ class CatalogSampleSliceTest(unittest.TestCase):
         forward = profile([1.0, 2.0], [0.1, 0.2], 0.5, 0.05)
         random_forward = profile([0.2, 0.4], [0.02, 0.04], 0.1, 0.01)
 
-        result = stacker._result(
+        result, provenance = stacker._result(
             "g-i",
             bins,
             "mcolors",
@@ -1088,18 +1088,20 @@ class CatalogSampleSliceTest(unittest.TestCase):
             None,
         )
 
-        np.testing.assert_allclose(result["g-i_delta_avg"], [0.8, 1.6])
-        self.assertEqual(float(result["g-i_ref_avg"]), 0.4)
+        np.testing.assert_allclose(provenance["g-i_delta_avg"], [0.8, 1.6])
+        self.assertEqual(float(provenance["g-i_ref_avg"]), 0.4)
         np.testing.assert_allclose(result["g-i_avg"], [0.4, 1.2])
-        np.testing.assert_allclose(result["g-i_uncorrected_avg"], [0.5, 1.5])
+        np.testing.assert_allclose(provenance["g-i_uncorrected_avg"], [0.5, 1.5])
         self.assertEqual(float(result["g-i_forward_ref_avg"]), 0.5)
-        self.assertEqual(float(result["g-i_forward_ref_raw_avg"]), 0.5)
+        self.assertEqual(float(provenance["g-i_forward_ref_raw_avg"]), 0.5)
         self.assertEqual(float(result["g-i_random_forward_ref_avg"]), 0.1)
-        self.assertEqual(float(result["g-i_random_forward_ref_raw_avg"]), 0.1)
+        self.assertEqual(float(provenance["g-i_random_forward_ref_raw_avg"]), 0.1)
         self.assertNotIn("g-i_flipped_avg", result)
         self.assertNotIn("g-i_flipped_ref_avg", result)
+        self.assertNotIn("g-i_flipped_ref_raw_avg", provenance)
         self.assertNotIn("g-i_random_flipped_avg", result)
         self.assertNotIn("g-i_random_flipped_ref_avg", result)
+        self.assertNotIn("g-i_random_flipped_ref_raw_avg", provenance)
 
     def test_treecorr_stacker_saves_component_apertures_for_plot_variants(
         self,
@@ -1142,7 +1144,7 @@ class CatalogSampleSliceTest(unittest.TestCase):
         random_forward = profile([2.0, 4.0], [0.2, 0.4], 0.25, 0.025)
         random_flipped = profile([0.5, 1.0], [0.05, 0.1], 0.125, 0.0125)
 
-        result = stacker._result(
+        result, provenance = stacker._result(
             "g-i",
             bins,
             "mcolors",
@@ -1184,7 +1186,7 @@ class CatalogSampleSliceTest(unittest.TestCase):
         np.testing.assert_allclose(random_corrected, [7.25, 15.25])
         np.testing.assert_allclose(flip_and_random_corrected, result["g-i_avg"])
         np.testing.assert_allclose(result["g-i_avg"], [5.125, 11.625])
-        self.assertEqual(float(result["g-i_random_flipped_ref_raw_avg"]), 0.125)
+        self.assertEqual(float(provenance["g-i_random_flipped_ref_raw_avg"]), 0.125)
 
 
 if __name__ == "__main__":

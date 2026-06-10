@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 import warnings
@@ -36,6 +36,7 @@ class StackResults:
     mode: str
     colors: tuple[str, ...]
     arrays: dict[str, np.ndarray]
+    diagnostics: dict[str, np.ndarray] = field(default_factory=dict)
     config_path: Path | None = None
 
     @property
@@ -50,6 +51,14 @@ class StackResults:
         except KeyError as exc:
             raise KeyError(
                 f"{self.stack_dir / f'stack_{self.mode}.npz'} is missing {key!r}"
+            ) from exc
+
+    def require_diagnostic(self, key: str) -> np.ndarray:
+        try:
+            return self.diagnostics[key]
+        except KeyError as exc:
+            raise KeyError(
+                f"{_stack_diagnostic_file(self.stack_dir, self.mode)} is missing {key!r}"
             ) from exc
 
 
@@ -121,6 +130,9 @@ def load_stack_results(
 
     selected_mode = _resolve_mode(stack_path, mode, configured_modes)
     arrays = _read_stack_npz(stack_path / f"stack_{selected_mode}.npz")
+    diagnostics = _read_optional_stack_npz(
+        _stack_diagnostic_file(stack_path, selected_mode)
+    )
     if not configured_colors:
         configured_colors = _infer_colors(arrays)
     if not configured_colors:
@@ -131,6 +143,7 @@ def load_stack_results(
         mode=selected_mode,
         colors=configured_colors,
         arrays=arrays,
+        diagnostics=diagnostics,
         config_path=config_path,
     )
 
@@ -280,10 +293,16 @@ def plot_photoz_radial_distributions(
         stack_dir=stack_dir,
     )
     fig, ax = _figure_and_axis(ax, style=style, style_path=style_path, figsize=figsize)
-    counts = np.asarray(results.require("diagnostic_photoz_counts"), dtype=float)
-    edges = np.asarray(results.require("diagnostic_photoz_bin_edges"), dtype=float)
+    counts = np.asarray(
+        results.require_diagnostic("diagnostic_photoz_counts"),
+        dtype=float,
+    )
+    edges = np.asarray(
+        results.require_diagnostic("diagnostic_photoz_bin_edges"),
+        dtype=float,
+    )
     radial_edges = np.asarray(
-        results.require("diagnostic_radial_bin_edges"),
+        results.require_diagnostic("diagnostic_radial_bin_edges"),
         dtype=float,
     )
     _plot_radial_histograms(ax, counts, edges, radial_edges)
@@ -318,15 +337,15 @@ def plot_color_radial_distributions(
     selected_color = results.first_color if color is None else str(color)
     fig, ax = _figure_and_axis(ax, style=style, style_path=style_path, figsize=figsize)
     counts = np.asarray(
-        results.require(f"{selected_color}_diagnostic_color_counts"),
+        results.require_diagnostic(f"{selected_color}_diagnostic_color_counts"),
         dtype=float,
     )
     edges = np.asarray(
-        results.require(f"{selected_color}_diagnostic_color_bin_edges"),
+        results.require_diagnostic(f"{selected_color}_diagnostic_color_bin_edges"),
         dtype=float,
     )
     radial_edges = np.asarray(
-        results.require("diagnostic_radial_bin_edges"),
+        results.require_diagnostic("diagnostic_radial_bin_edges"),
         dtype=float,
     )
     _plot_radial_histograms(ax, counts, edges, radial_edges)
@@ -405,7 +424,7 @@ def save_stack_diagnostic_figures(
     if {
         "diagnostic_photoz_counts",
         "diagnostic_photoz_bin_edges",
-    }.issubset(results.arrays):
+    }.issubset(results.diagnostics):
         photoz_path = output_path / f"{stem}_photoz_distribution.{extension}"
         fig = plot_photoz_radial_distributions(results)
         fig.savefig(photoz_path, dpi=dpi, bbox_inches="tight")
@@ -416,7 +435,7 @@ def save_stack_diagnostic_figures(
         if not {
             f"{color}_diagnostic_color_counts",
             f"{color}_diagnostic_color_bin_edges",
-        }.issubset(results.arrays):
+        }.issubset(results.diagnostics):
             continue
         color_path = output_path / (
             f"{stem}_{_slug(color)}_color_distribution.{extension}"
@@ -580,12 +599,13 @@ def _require_histogram_shape(
 
 
 def _has_diagnostic_arrays(results: StackResults) -> bool:
-    if "diagnostic_radial_bin_edges" not in results.arrays:
+    if "diagnostic_radial_bin_edges" not in results.diagnostics:
         return False
-    if "diagnostic_photoz_counts" in results.arrays:
+    if "diagnostic_photoz_counts" in results.diagnostics:
         return True
     return any(
-        f"{color}_diagnostic_color_counts" in results.arrays for color in results.colors
+        f"{color}_diagnostic_color_counts" in results.diagnostics
+        for color in results.colors
     )
 
 
@@ -594,6 +614,16 @@ def _read_stack_npz(path: Path) -> dict[str, np.ndarray]:
         raise FileNotFoundError(path)
     with np.load(path) as data:
         return {key: np.asarray(data[key]) for key in data.files}
+
+
+def _read_optional_stack_npz(path: Path) -> dict[str, np.ndarray]:
+    if not path.exists():
+        return {}
+    return _read_stack_npz(path)
+
+
+def _stack_diagnostic_file(stack_dir: Path, mode: str) -> Path:
+    return stack_dir / f"stack_{mode}_diagnostics.npz"
 
 
 def _resolve_mode(
@@ -610,7 +640,11 @@ def _resolve_mode(
     if (stack_dir / "stack_mcolors.npz").exists():
         return "mcolors"
 
-    matches = sorted(stack_dir.glob("stack_*.npz"))
+    matches = [
+        path
+        for path in sorted(stack_dir.glob("stack_*.npz"))
+        if not path.stem.endswith(("_diagnostics", "_provenance"))
+    ]
     if len(matches) == 1:
         return matches[0].stem.removeprefix("stack_")
     raise FileNotFoundError(f"Could not choose a stack mode in {stack_dir}")

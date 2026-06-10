@@ -124,7 +124,12 @@ selected column with `NaN` while preserving rows.
 Analysis YAML files point at a sample YAML and own only stack settings. TreeCorr
 is the only stacker; there is no `engine` option. The stack stage consumes the
 prepared sample and catalog footprint, then writes one `stack_<mode>.npz` per
-configured mode plus `config_resolved.yaml`.
+configured mode plus `config_resolved.yaml`. The main stack NPZ contains the
+science signal, jackknife arrays, and color-space component profiles needed to
+rebuild correction variants. `stack_<mode>_provenance.npz` contains raw-space
+profiles, pair counts, and derived intermediate estimator terms. With
+`diagnostic_plots` enabled, `stack_<mode>_diagnostics.npz` contains the histogram
+inputs for diagnostic figures.
 
 Stack options include `colors`, `modes` (`fcolors` and/or `mcolors`),
 `r_bin_edges` as an explicit list or `geomspace`/`linspace`/`logspace`,
@@ -140,9 +145,9 @@ Each analysis run also refreshes standard stack figures in
 `results/stacks/<analysis-id>`: one square log-log jackknife-sample plot for the
 first configured color, and one square log-log full-signal plot for every color,
 for each configured stack mode. With `diagnostic_plots` enabled, stack outputs
-also include pair-weighted background photo-z and magnitude-color histograms for
-each radial bin; the pipeline saves one photo-z diagnostic and one color
-diagnostic per configured color.
+also include a diagnostics NPZ with pair-weighted background photo-z and
+magnitude-color histograms for each radial bin; the pipeline saves one photo-z
+diagnostic and one color diagnostic per configured color.
 
 Stack plotting helpers also live in `dusty_colors.plotting` for manual use. They
 load the analysis YAML color order and apply the project Matplotlib style:

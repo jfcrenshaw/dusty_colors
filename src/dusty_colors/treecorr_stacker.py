@@ -467,6 +467,7 @@ class TreeCorrStacker:
         self, mode: ColorMode, bins: list[_RadialBin], ref_bin: _RadialBin
     ) -> None:
         results = {}
+        provenance = {}
 
         print(f"   stacking {mode} with TreeCorr...", end="", flush=True)
         for color in self.colors:
@@ -495,21 +496,28 @@ class TreeCorrStacker:
                         foreground, bins, ref_bin, mode, "flipped", random=True
                     )
 
-            results.update(
-                self._result(
-                    color,
-                    bins,
-                    mode,
-                    forward,
-                    flipped,
-                    random_forward,
-                    random_flipped,
-                )
+            color_results, color_provenance = self._result(
+                color,
+                bins,
+                mode,
+                forward,
+                flipped,
+                random_forward,
+                random_flipped,
             )
+            results.update(color_results)
+            provenance.update(color_provenance)
         print(".")
 
-        results.update(self._diagnostic_arrays(mode, bins))
         np.savez_compressed(self._stack_file(mode), **results)
+        np.savez_compressed(self._provenance_file(mode), **provenance)
+        if self.diagnostic_plots:
+            np.savez_compressed(
+                self._diagnostic_file(mode),
+                **self._diagnostic_arrays(mode, bins),
+            )
+        else:
+            self._diagnostic_file(mode).unlink(missing_ok=True)
 
     def _observable(
         self, catalog: pd.DataFrame, color: str, mode: ColorMode
@@ -794,7 +802,7 @@ class TreeCorrStacker:
         flipped: _Profile | None,
         random_forward: _Profile | None = None,
         random_flipped: _Profile | None = None,
-    ) -> dict[str, np.ndarray]:
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
         estimate = self._color_excess_estimate(
             mode,
             forward,
@@ -910,7 +918,7 @@ class TreeCorrStacker:
         estimate: _EstimatorResult,
         random_forward: _Profile | None = None,
         random_flipped: _Profile | None = None,
-    ) -> dict[str, np.ndarray]:
+    ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
         use_flipped = self.flipped_correction
         result = {
             f"{color}_bin_centers": self._bin_centers(bins),
@@ -918,6 +926,12 @@ class TreeCorrStacker:
             f"{color}_err": estimate.signal_err,
             f"{color}_cov": estimate.covariance,
             f"{color}_analytic_err": estimate.analytic_err,
+            f"{color}_forward_avg": forward.color,
+            f"{color}_forward_err": forward.color_err,
+            f"{color}_forward_ref_avg": np.array(forward.ref_color),
+            f"{color}_forward_ref_err": np.array(forward.ref_color_err),
+        }
+        provenance = {
             f"{color}_delta_avg": estimate.delta,
             f"{color}_delta_err": estimate.delta_err,
             f"{color}_raw_delta_avg": estimate.raw_delta,
@@ -927,13 +941,9 @@ class TreeCorrStacker:
             f"{color}_raw_ref_avg": np.array(estimate.raw_ref),
             f"{color}_raw_ref_err": np.array(estimate.raw_ref_err),
             f"{color}_uncorrected_avg": estimate.raw_delta - estimate.raw_ref,
-            f"{color}_forward_avg": forward.color,
-            f"{color}_forward_err": forward.color_err,
             f"{color}_forward_raw_avg": forward.raw,
             f"{color}_forward_raw_err": forward.raw_err,
             f"{color}_forward_npairs": forward.npairs,
-            f"{color}_forward_ref_avg": np.array(forward.ref_color),
-            f"{color}_forward_ref_err": np.array(forward.ref_color_err),
             f"{color}_forward_ref_raw_avg": np.array(forward.ref_raw),
             f"{color}_forward_ref_raw_err": np.array(forward.ref_raw_err),
             f"{color}_forward_ref_npairs": np.array(forward.ref_npairs),
@@ -943,11 +953,15 @@ class TreeCorrStacker:
                 {
                     f"{color}_flipped_avg": flipped.color,
                     f"{color}_flipped_err": flipped.color_err,
+                    f"{color}_flipped_ref_avg": np.array(flipped.ref_color),
+                    f"{color}_flipped_ref_err": np.array(flipped.ref_color_err),
+                }
+            )
+            provenance.update(
+                {
                     f"{color}_flipped_raw_avg": flipped.raw,
                     f"{color}_flipped_raw_err": flipped.raw_err,
                     f"{color}_flipped_npairs": flipped.npairs,
-                    f"{color}_flipped_ref_avg": np.array(flipped.ref_color),
-                    f"{color}_flipped_ref_err": np.array(flipped.ref_color_err),
                     f"{color}_flipped_ref_raw_avg": np.array(flipped.ref_raw),
                     f"{color}_flipped_ref_raw_err": np.array(flipped.ref_raw_err),
                     f"{color}_flipped_ref_npairs": np.array(flipped.ref_npairs),
@@ -956,21 +970,25 @@ class TreeCorrStacker:
         if estimate.random_delta is not None:
             result.update(
                 {
-                    f"{color}_random_delta_avg": estimate.random_delta,
-                    f"{color}_random_delta_err": estimate.random_delta_err,
-                    f"{color}_random_ref_avg": np.array(estimate.random_ref),
-                    f"{color}_random_ref_err": np.array(estimate.random_ref_err),
                     f"{color}_random_forward_avg": random_forward.color,
                     f"{color}_random_forward_err": random_forward.color_err,
-                    f"{color}_random_forward_raw_avg": random_forward.raw,
-                    f"{color}_random_forward_raw_err": random_forward.raw_err,
-                    f"{color}_random_forward_npairs": random_forward.npairs,
                     f"{color}_random_forward_ref_avg": np.array(
                         random_forward.ref_color
                     ),
                     f"{color}_random_forward_ref_err": np.array(
                         random_forward.ref_color_err
                     ),
+                }
+            )
+            provenance.update(
+                {
+                    f"{color}_random_delta_avg": estimate.random_delta,
+                    f"{color}_random_delta_err": estimate.random_delta_err,
+                    f"{color}_random_ref_avg": np.array(estimate.random_ref),
+                    f"{color}_random_ref_err": np.array(estimate.random_ref_err),
+                    f"{color}_random_forward_raw_avg": random_forward.raw,
+                    f"{color}_random_forward_raw_err": random_forward.raw_err,
+                    f"{color}_random_forward_npairs": random_forward.npairs,
                     f"{color}_random_forward_ref_raw_avg": np.array(
                         random_forward.ref_raw
                     ),
@@ -987,15 +1005,19 @@ class TreeCorrStacker:
                     {
                         f"{color}_random_flipped_avg": random_flipped.color,
                         f"{color}_random_flipped_err": random_flipped.color_err,
-                        f"{color}_random_flipped_raw_avg": random_flipped.raw,
-                        f"{color}_random_flipped_raw_err": random_flipped.raw_err,
-                        f"{color}_random_flipped_npairs": random_flipped.npairs,
                         f"{color}_random_flipped_ref_avg": np.array(
                             random_flipped.ref_color
                         ),
                         f"{color}_random_flipped_ref_err": np.array(
                             random_flipped.ref_color_err
                         ),
+                    }
+                )
+                provenance.update(
+                    {
+                        f"{color}_random_flipped_raw_avg": random_flipped.raw,
+                        f"{color}_random_flipped_raw_err": random_flipped.raw_err,
+                        f"{color}_random_flipped_npairs": random_flipped.npairs,
                         f"{color}_random_flipped_ref_raw_avg": np.array(
                             random_flipped.ref_raw
                         ),
@@ -1013,12 +1035,9 @@ class TreeCorrStacker:
                     f"{color}_jackknife_avg": estimate.jackknife.mean,
                     f"{color}_jackknife_err": estimate.jackknife.err,
                     f"{color}_jackknife_samples": estimate.jackknife.samples,
-                    f"{color}_jackknife_patch": np.arange(
-                        estimate.jackknife.samples.shape[0]
-                    ),
                 }
             )
-        return result
+        return result, provenance
 
     def _jackknife_stats(
         self,
@@ -1477,8 +1496,19 @@ class TreeCorrStacker:
     def _stack_file(self, mode: ColorMode) -> Path:
         return self.out_dir / f"stack_{mode}.npz"
 
+    def _diagnostic_file(self, mode: ColorMode) -> Path:
+        return self.out_dir / f"stack_{mode}_diagnostics.npz"
+
+    def _provenance_file(self, mode: ColorMode) -> Path:
+        return self.out_dir / f"stack_{mode}_provenance.npz"
+
     def _expected_files(self) -> list[Path]:
-        return [self._stack_file(mode) for mode in self.modes]
+        files = []
+        for mode in self.modes:
+            files.extend((self._stack_file(mode), self._provenance_file(mode)))
+            if self.diagnostic_plots:
+                files.append(self._diagnostic_file(mode))
+        return files
 
     def _save_config(self) -> None:
         with open(self.out_dir / "config_resolved.yaml", "w") as file:

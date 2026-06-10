@@ -172,6 +172,9 @@ class ConfigPipelineTest(unittest.TestCase):
             analysis_path = _write_graph(root)
             run_pipeline(analysis_path, root=root, handlers=_handlers())
             stack_dir = root / "results/stacks/analysis_default"
+            self.assertTrue((stack_dir / "stack_fcolors.npz").exists())
+            self.assertTrue((stack_dir / "stack_fcolors_provenance.npz").exists())
+            self.assertTrue((stack_dir / "stack_fcolors_diagnostics.npz").exists())
             jackknife_plot = stack_dir / "analysis_default_fcolors_g_i_jackknife.pdf"
             all_colors_plot = stack_dir / "analysis_default_fcolors_all_colors.pdf"
             self.assertTrue(jackknife_plot.exists())
