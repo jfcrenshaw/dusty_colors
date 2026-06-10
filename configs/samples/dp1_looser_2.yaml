@@ -1,0 +1,73 @@
+id: dp1_looser_2
+catalog: configs/catalogs/dp1.yaml
+selection:
+  foreground_z: [0.2, 0.5]
+  background_z: [0.7, 1.4]
+  shared_query: z_phot_err < 0.2 and z_phot_diff < 0.2
+  pixel_depth_cuts:
+    fluxerr_template: cmodel_fluxerr_{band}
+    depth_sigma: 10
+    aggregate: median
+    valid_range:
+      bands: [u, g, r, i, z, y]
+      min: 20.0
+      max: 30.0
+    min_occupancy: 30
+    complete_to:
+      band: r
+      magnitude: 24.0
+    drop_shallowest:
+      bands: [g, i, z]
+      fraction: 0.05
+      unique_pixels: true
+  snr_min:
+    flux_template: cmodel_flux_{band}
+    fluxerr_template: cmodel_fluxerr_{band}
+    bands:
+      r: 20
+  blendedness_max:
+    column: blendedness_i
+    value: 0.42
+  magnitude_limits:
+    - band: r
+      min: 18.0
+      max: 24.0
+      flux_col: cmodel_flux_r
+  foreground_query: >-
+    photoz_sigma_fzboost < 0.1 and photoz_sigma_lephare < 0.1
+    and z_phot_diff < 0.1 * (1 + z_phot)
+  background_query: >-
+    photoz_sigma_fzboost < 0.1 and photoz_sigma_lephare < 0.1
+    and z_phot_diff < 0.1 * (1 + z_phot)
+footprint:
+  enabled: true
+  columns: [ra, dec, field, pixel, jackknife_region]
+jackknife:
+  regions_per_field: 3
+cleaning:
+  foreground:
+    enabled: false
+  background:
+    enabled: true
+    column_redshift_trend:
+      enabled: true
+      columns:
+        - flux_g
+        - flux_r
+        - flux_i
+        - flux_z
+      redshift_col: z_phot
+      method: binned_median
+      mode: flux
+      bin_width: 0.04
+      overwrite: true
+    column_isolation_forest:
+      enabled: true
+      columns:
+        - flux_g
+        - flux_r
+        - flux_i
+        - flux_z
+      redshift_col: z_phot
+      scale: none
+      random_state: 42
