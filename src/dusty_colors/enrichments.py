@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 import re
@@ -15,6 +15,7 @@ from scipy.optimize import brentq
 
 ROOT = Path(__file__).resolve().parents[2]
 MAGSYS_ZEROPOINT = 31.4
+DEFAULT_KCORRECT_BATCH_SIZE = 5000
 
 
 def apply_enrichments(
@@ -99,7 +100,9 @@ class KcorrectEnrichment:
         Kcorrect = self.kcorrect_class()
         model = self.config.get("model")
         if model is not None:
-            return Kcorrect(filename=str(self.resolve_path(model)))
+            out = Kcorrect(filename=str(self.resolve_path(model)))
+            self.validate_model_response_config(out)
+            return out
 
         responses = self.config.get("responses")
         if not responses:
@@ -136,7 +139,34 @@ class KcorrectEnrichment:
             raise ValueError(
                 "kcorrect enrichment needs response_bands or inferrable response names"
             )
+        self.validate_response_band_count(model, bands)
         return bands
+
+    def validate_model_response_config(self, model: Any) -> None:
+        configured = self.config.get("responses")
+        if not isinstance(configured, (list, tuple)):
+            return
+        model_responses = list(getattr(model, "responses", []) or [])
+        if model_responses and len(configured) != len(model_responses):
+            raise ValueError(
+                "kcorrect model has "
+                f"{len(model_responses)} responses but configured responses has "
+                f"{len(configured)} entries. Saved kcorrect models define their own "
+                "responses; use a saved model built from the same responses, or "
+                "omit 'model' to build from the configured responses."
+            )
+
+    @staticmethod
+    def validate_response_band_count(model: Any, bands: Sequence[str]) -> None:
+        model_responses = list(getattr(model, "responses", []) or [])
+        if model_responses and len(model_responses) != len(bands):
+            raise ValueError(
+                "kcorrect model has "
+                f"{len(model_responses)} responses but response_bands has "
+                f"{len(bands)} entries. Provide one response band and one "
+                "flux/fluxerr column per model response, use a matching saved "
+                "model, or omit 'model' to build from the configured responses."
+            )
 
     def catalog_maggies(
         self,
@@ -226,34 +256,85 @@ class KcorrectEnrichment:
         stellar_mass_col: str,
         linear_mass_col: Any,
     ) -> None:
-        ivar = 1.0 / errors[good] ** 2
-        coeffs = model.fit_coeffs(
-            redshift=redshift[good],
-            maggies=maggies[good],
-            ivar=ivar,
-        )
-        absmag = model.absmag(
-            redshift=redshift[good],
-            maggies=maggies[good],
-            ivar=ivar,
-            coeffs=coeffs,
-        )
-        derived = model.derived(redshift=redshift[good], coeffs=coeffs)
-        stellar_mass = np.asarray(derived["mremain"], dtype=float)
-
         response_lookup = {band: i for i, band in enumerate(response_bands)}
         for band in absmag_bands:
             if band not in response_lookup:
                 raise ValueError(f"absmag band '{band}' not in response_bands")
-            catalog.loc[good, f"absmag_{band}"] = absmag[:, response_lookup[band]]
+
+        good_rows = np.flatnonzero(good)
+        batch_size = self.batch_size()
+        for batch_rows in self.row_batches(good_rows, batch_size):
+            self.fit_and_write_batch(
+                catalog,
+                model,
+                rows=batch_rows,
+                redshift=redshift,
+                maggies=maggies,
+                errors=errors,
+                response_lookup=response_lookup,
+                absmag_bands=absmag_bands,
+                stellar_mass_col=stellar_mass_col,
+                linear_mass_col=linear_mass_col,
+            )
+
+    def fit_and_write_batch(
+        self,
+        catalog: pd.DataFrame,
+        model: Any,
+        *,
+        rows: np.ndarray,
+        redshift: np.ndarray,
+        maggies: np.ndarray,
+        errors: np.ndarray,
+        response_lookup: Mapping[str, int],
+        absmag_bands: Sequence[str],
+        stellar_mass_col: str,
+        linear_mass_col: Any,
+    ) -> None:
+        batch_redshift = redshift[rows]
+        batch_maggies = maggies[rows]
+        batch_ivar = 1.0 / errors[rows] ** 2
+        coeffs = model.fit_coeffs(
+            redshift=batch_redshift,
+            maggies=batch_maggies,
+            ivar=batch_ivar,
+        )
+        absmag = model.absmag(
+            redshift=batch_redshift,
+            maggies=batch_maggies,
+            ivar=batch_ivar,
+            coeffs=coeffs,
+        )
+        derived = model.derived(redshift=batch_redshift, coeffs=coeffs)
+        stellar_mass = np.asarray(derived["mremain"], dtype=float)
+
+        for band in absmag_bands:
+            col = catalog.columns.get_loc(f"absmag_{band}")
+            catalog.iloc[rows, col] = absmag[:, response_lookup[band]]
+        mass_col = catalog.columns.get_loc(stellar_mass_col)
         with np.errstate(divide="ignore", invalid="ignore"):
-            catalog.loc[good, stellar_mass_col] = np.where(
+            catalog.iloc[rows, mass_col] = np.where(
                 stellar_mass > 0,
                 np.log10(stellar_mass),
                 np.nan,
             )
         if linear_mass_col:
-            catalog.loc[good, str(linear_mass_col)] = stellar_mass
+            linear_col = catalog.columns.get_loc(str(linear_mass_col))
+            catalog.iloc[rows, linear_col] = stellar_mass
+
+    def batch_size(self) -> int:
+        raw = self.config.get("batch_size", DEFAULT_KCORRECT_BATCH_SIZE)
+        if raw is None:
+            return np.iinfo(np.intp).max
+        size = int(raw)
+        if size < 1:
+            raise ValueError("kcorrect batch_size must be positive")
+        return size
+
+    @staticmethod
+    def row_batches(rows: np.ndarray, batch_size: int) -> Iterator[np.ndarray]:
+        for start in range(0, len(rows), batch_size):
+            yield rows[start : start + batch_size]
 
     @staticmethod
     def kcorrect_class() -> Any:
