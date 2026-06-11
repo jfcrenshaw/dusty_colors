@@ -41,6 +41,17 @@ python scripts/run_stack.py configs/analyses/dp1_default.yaml --force-catalog
 python scripts/run_stack.py configs/analyses/dp1_default.yaml --force-all
 ```
 
+To rebuild the saved Pai & Blanton 2024 kcorrect model for the Rubin `griz`
+responses used by the DP1 configs:
+
+```bash
+mamba run -n dusty_colors python scripts/build_kcorrect_broad.py --force
+```
+
+The script reads `data/kcorrect/templates_broad.fits`, uses the
+`data/bandpasses/rubin_bandpass_<band>_v1.9.1.dat` response files, and replaces
+`data/kcorrect/kcorrect_broad.fits` only when `--force` is supplied.
+
 ## YAML pipeline
 
 The config graph is:
@@ -135,11 +146,27 @@ Stack options include `colors`, `modes` (`fcolors` and/or `mcolors`),
 `r_bin_edges` as an explicit list or `geomspace`/`linspace`/`logspace`,
 `reference_annulus`, `snr_max`, `bin_slop`, `num_threads`, `jackknife`,
 `patch_col`, `cross_patch_weight`, `random_correction`, `random_multiplier`,
-`random_seed`, `random_nside`, `flipped_correction`, `diagnostic_plots`,
-`diagnostic_photoz_bins`, and `diagnostic_color_bins`. Set
+`random_seed`, `random_nside`, `random_weighting`, `flipped_correction`,
+`diagnostic_plots`, `diagnostic_photoz_bins`, and `diagnostic_color_bins`. Set
 `flipped_correction: false` to measure the forward stack minus the random forward
 stack, with the same reference-annulus subtraction, without subtracting
 foreground-color flipped stacks.
+
+Set `random_weighting` to make the otherwise uniform random catalogs match the
+real foreground/background distribution in per-pixel depth or noise features.
+For example, the following weights randoms in jackknife patches so their binned
+local-depth distribution matches the real sample:
+
+```yaml
+stack:
+  random_weighting:
+    enabled: true
+    depth:
+      bands: [g, r, i, z]
+      fluxerr_template: cmodel_fluxerr_{band}
+      depth_sigma: 5
+    n_bins: 5
+```
 
 Each analysis run also refreshes standard stack figures in
 `results/stacks/<analysis-id>`: one square log-log jackknife-sample plot for the
