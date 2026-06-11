@@ -249,7 +249,7 @@ class CatalogAdapter(ABC):
         return label or "estimate"
 
 
-class DP1CatalogAdapter(CatalogAdapter):
+class RubinDP1CatalogAdapter(CatalogAdapter):
     """Adapt assembled Rubin DP1 tables into the canonical schema."""
 
     auxiliary_flux_types = ("cModel",)
@@ -316,11 +316,13 @@ class DP1CatalogAdapter(CatalogAdapter):
 
         for band in bands:
             if photometry in (None, "flux"):
-                self.copy_if_exists(
-                    source, out, f"{band}_{flux_type}Flux", f"flux_{band}"
-                )
-                self.copy_if_exists(
-                    source, out, f"{band}_{flux_type}FluxErr", f"fluxerr_{band}"
+                self.copy_flux_or_mag_as_flux(
+                    source,
+                    out,
+                    band=band,
+                    flux_type=flux_type,
+                    target_flux_col=f"flux_{band}",
+                    target_fluxerr_col=f"fluxerr_{band}",
                 )
             if photometry in (None, "mag"):
                 self.copy_if_exists(
@@ -334,21 +336,47 @@ class DP1CatalogAdapter(CatalogAdapter):
                 self.auxiliary_flux_types,
             ):
                 label = self.photometry_label(str(aux_flux_type))
-                self.copy_if_exists(
+                self.copy_flux_or_mag_as_flux(
                     source,
                     out,
-                    f"{band}_{aux_flux_type}Flux",
-                    f"{label}_flux_{band}",
-                )
-                self.copy_if_exists(
-                    source,
-                    out,
-                    f"{band}_{aux_flux_type}FluxErr",
-                    f"{label}_fluxerr_{band}",
+                    band=band,
+                    flux_type=str(aux_flux_type),
+                    target_flux_col=f"{label}_flux_{band}",
+                    target_fluxerr_col=f"{label}_fluxerr_{band}",
                 )
             self.copy_if_exists(source, out, f"{band}5_pixel", f"depth5_{band}")
 
         return out
+
+    def copy_flux_or_mag_as_flux(
+        self,
+        source: pd.DataFrame,
+        target: pd.DataFrame,
+        *,
+        band: str,
+        flux_type: str,
+        target_flux_col: str,
+        target_fluxerr_col: str,
+    ) -> None:
+        flux_col = f"{band}_{flux_type}Flux"
+        fluxerr_col = f"{band}_{flux_type}FluxErr"
+        mag_col = f"{band}_{flux_type}Mag"
+        magerr_col = f"{band}_{flux_type}MagErr"
+
+        if flux_col in source:
+            target[target_flux_col] = source[flux_col]
+        elif mag_col in source:
+            target[target_flux_col] = self.ab_magnitude_to_nanjy(
+                source[mag_col].to_numpy(float)
+            )
+
+        if fluxerr_col in source:
+            target[target_fluxerr_col] = source[fluxerr_col]
+        elif magerr_col in source and target_flux_col in target:
+            target[target_fluxerr_col] = self.magerr_to_nanjy_error(
+                target[target_flux_col].to_numpy(float),
+                source[magerr_col].to_numpy(float),
+            )
 
     @staticmethod
     def photometry_label(flux_type: str) -> str:
@@ -490,7 +518,7 @@ class ClaudsSExtractorCatalogAdapter(CatalogAdapter):
 
 
 ADAPTER_CLASSES: dict[str, type[CatalogAdapter]] = {
-    "dp1": DP1CatalogAdapter,
+    "rubin_dp1": RubinDP1CatalogAdapter,
     "clauds_sextractor": ClaudsSExtractorCatalogAdapter,
 }
 

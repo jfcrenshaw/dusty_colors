@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
@@ -14,7 +15,7 @@ import pandas as pd
 
 from dusty_colors.catalogs import (
     ClaudsSExtractorCatalogAdapter,
-    DP1CatalogAdapter,
+    RubinDP1CatalogAdapter,
     prepare_catalog,
     validate_canonical_schema,
 )
@@ -33,7 +34,11 @@ from dusty_colors.observables import (
     flux_ratio_observable,
     magnitude_color_observable,
 )
-from dusty_colors.selection import select_samples, write_sample_outputs
+from dusty_colors.selection import (
+    select_samples,
+    select_samples_with_report,
+    write_sample_outputs,
+)
 from dusty_colors.treecorr_stacker import TreeCorrStacker
 from astropy.cosmology import Planck18 as cosmo
 
@@ -63,9 +68,9 @@ class CatalogSampleSliceTest(unittest.TestCase):
             }
         )
 
-        catalog = DP1CatalogAdapter({"bands": ["g", "r"], "photometry": "flux"}).adapt(
-            raw
-        )
+        catalog = RubinDP1CatalogAdapter(
+            {"bands": ["g", "r"], "photometry": "flux"}
+        ).adapt(raw)
 
         validate_canonical_schema(catalog, bands=["g", "r"], photometry="flux")
         self.assertEqual(list(catalog["object_id"]), [10, 11])
@@ -74,6 +79,47 @@ class CatalogSampleSliceTest(unittest.TestCase):
         np.testing.assert_allclose(catalog["cmodel_flux_r"], [12.0, 22.0])
         self.assertIn("depth5_g", catalog)
         np.testing.assert_allclose(catalog["flux_g"], raw["g_gaap1p0Flux"])
+
+    def test_rubin_dp1_adapter_converts_magnitudes_to_flux_photometry(self) -> None:
+        raw = pd.DataFrame(
+            {
+                "objectId": [10, 11],
+                "coord_ra": [37.8, 37.9],
+                "coord_dec": [7.0, 7.1],
+                "z_phot": [0.3, 0.8],
+                "z_phot_err": [0.03, 0.04],
+                "g_gaap1p0Mag": [24.0, np.nan],
+                "g_gaap1p0MagErr": [0.05, np.nan],
+                "r_gaap1p0Mag": [23.5, 24.5],
+                "r_gaap1p0MagErr": [0.04, 0.06],
+                "r_cModelMag": [23.0, 24.0],
+                "r_cModelMagErr": [0.03, 0.05],
+            }
+        )
+
+        catalog = RubinDP1CatalogAdapter(
+            {
+                "bands": ["g", "r"],
+                "photometry": "flux",
+                "auxiliary_flux_types": ["cModel"],
+            }
+        ).adapt(raw)
+
+        def flux_from_mag(mag: float) -> float:
+            return 10 ** ((31.4 - mag) / 2.5)
+
+        validate_canonical_schema(catalog, bands=["g", "r"], photometry="flux")
+        expected_g = np.array([flux_from_mag(24.0), np.nan])
+        expected_r = np.array([flux_from_mag(23.5), flux_from_mag(24.5)])
+        expected_cmodel_r = np.array([flux_from_mag(23.0), flux_from_mag(24.0)])
+        np.testing.assert_allclose(catalog["flux_g"], expected_g)
+        np.testing.assert_allclose(catalog["flux_r"], expected_r)
+        np.testing.assert_allclose(catalog["cmodel_flux_r"], expected_cmodel_r)
+        np.testing.assert_allclose(
+            catalog["fluxerr_r"],
+            expected_r * np.log(10.0) / 2.5 * np.array([0.04, 0.06]),
+        )
+        self.assertEqual(list(catalog["is_galaxy"]), [True, True])
 
     def test_prepare_catalog_assembles_sources_and_applies_extinction(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -122,7 +168,7 @@ class CatalogSampleSliceTest(unittest.TestCase):
 
             config = {
                 "id": "dp1_test",
-                "adapter": "dp1",
+                "adapter": "rubin_dp1",
                 "primary_source": "objects",
                 "sources": {
                     "objects": {"path": object_path},
@@ -197,6 +243,117 @@ class CatalogSampleSliceTest(unittest.TestCase):
             self.assertIn("photoz_sigma_lephare", catalog)
             self.assertIn("z_phot_diff", catalog)
 
+    def test_prepare_rubin_dp1_catalog_joins_downloaded_redshifts(self) -> None:
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            objects = pd.DataFrame(
+                {
+                    "objectId": [1, 2],
+                    "coord_ra": [37.86, 37.90],
+                    "coord_dec": [6.98, 7.01],
+                    "g_gaap1p0Mag": [24.0, 24.5],
+                    "g_gaap1p0MagErr": [0.05, 0.06],
+                    "r_gaap1p0Mag": [23.5, 24.0],
+                    "r_gaap1p0MagErr": [0.04, 0.05],
+                    "r_cModelMag": [23.0, 23.8],
+                    "r_cModelMagErr": [0.03, 0.04],
+                }
+            )
+            photoz = pd.DataFrame(
+                {
+                    "objectId": [1, 2],
+                    "fzboost_z_mode": [0.3, 0.8],
+                    "fzboost_z_err68_low": [0.26, 0.74],
+                    "fzboost_z_err68_high": [0.34, 0.86],
+                    "lephare_z_mode": [0.32, 0.82],
+                    "lephare_z_err68_low": [0.26, 0.76],
+                    "lephare_z_err68_high": [0.38, 0.88],
+                }
+            )
+            spec_train = pd.DataFrame(
+                {"i_ra": [37.86], "i_dec": [6.98], "redshift": [0.31]}
+            )
+            spec_test = pd.DataFrame(
+                {"i_ra": [37.90], "i_dec": [7.01], "redshift": [0.81]}
+            )
+            object_path = tmp_path / "objects.parquet"
+            photoz_path = tmp_path / "photoz.parquet"
+            spec_train_path = tmp_path / "spec_train.parquet"
+            spec_test_path = tmp_path / "spec_test.parquet"
+            objects.to_parquet(object_path, index=False)
+            photoz.to_parquet(photoz_path, index=False)
+            spec_train.to_parquet(spec_train_path, index=False)
+            spec_test.to_parquet(spec_test_path, index=False)
+
+            config = {
+                "id": "rubin_dp1_test",
+                "adapter": "rubin_dp1",
+                "primary_source": "objects",
+                "sources": {
+                    "objects": {"path": object_path},
+                    "photoz": {
+                        "path": photoz_path,
+                        "join": {
+                            "left_key": "objectId",
+                            "right_key": "objectId",
+                            "how": "inner",
+                        },
+                    },
+                    "specz": {
+                        "files": [
+                            {"path": spec_train_path},
+                            {"path": spec_test_path},
+                        ],
+                        "finite": ["redshift"],
+                        "columns": ["i_ra", "i_dec", "redshift"],
+                        "drop_duplicates": ["i_ra", "i_dec"],
+                        "join": {
+                            "left_key": ["coord_ra", "coord_dec"],
+                            "right_key": ["i_ra", "i_dec"],
+                            "how": "left",
+                            "validate": "many_to_one",
+                        },
+                    },
+                },
+                "bands": ["g", "r"],
+                "photometry": "flux",
+                "flux_type": "gaap1p0",
+                "auxiliary_flux_types": ["cModel"],
+                "photoz": {
+                    "combine": {
+                        "estimates": [
+                            {
+                                "z": "fzboost_z_mode",
+                                "err_low": "fzboost_z_err68_low",
+                                "err_high": "fzboost_z_err68_high",
+                            },
+                            {
+                                "z": "lephare_z_mode",
+                                "err_low": "lephare_z_err68_low",
+                                "err_high": "lephare_z_err68_high",
+                            },
+                        ]
+                    }
+                },
+                "extinction": {"enabled": False},
+                "footprint": {
+                    "nside": 1024,
+                    "fields": {
+                        "Rubin SV 38 7": {"ra": 37.86, "dec": 6.98},
+                    },
+                },
+            }
+
+            prepare_catalog(config, tmp_path / "out")
+            catalog = pd.read_parquet(tmp_path / "out/catalog.parquet")
+
+            self.assertEqual(list(catalog["object_id"]), [1, 2])
+            np.testing.assert_allclose(catalog["spec_z"], [0.31, 0.81])
+            self.assertEqual(list(catalog["field"]), ["Rubin SV 38 7"] * 2)
+            self.assertIn("cmodel_flux_r", catalog)
+            self.assertNotIn("i_ra", catalog)
+            self.assertNotIn("i_dec", catalog)
+
     def test_prepare_catalog_assigns_footprint_without_sample_cuts(self) -> None:
         with TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -222,7 +379,7 @@ class CatalogSampleSliceTest(unittest.TestCase):
             prepare_catalog(
                 {
                     "id": "dp1_depth_test",
-                    "adapter": "dp1",
+                    "adapter": "rubin_dp1",
                     "primary_source": "objects",
                     "sources": {"objects": {"path": object_path}},
                     "bands": ["g", "r"],
@@ -648,6 +805,66 @@ class CatalogSampleSliceTest(unittest.TestCase):
             self.assertTrue((Path(tmp) / "foreground.parquet").exists())
             self.assertTrue((Path(tmp) / "background.parquet").exists())
 
+    def test_sample_outputs_write_report_with_cut_and_field_counts(self) -> None:
+        catalog = pd.DataFrame(
+            {
+                "object_id": [1, 2, 3, 4],
+                "ra": [1.0, 2.0, 3.0, 4.0],
+                "dec": [0.0, 0.0, 0.0, 0.0],
+                "field": ["A", "A", "B", "B"],
+                "pixel": [10, 10, 11, 11],
+                "z_phot": [0.3, 0.9, 0.4, 0.95],
+                "z_phot_err": [0.03, 0.04, 0.2, 0.03],
+                "is_galaxy": [True] * 4,
+                "mask_ok": [True] * 4,
+                "quality_ok": [True] * 4,
+                "flux_g": [10.0] * 4,
+                "fluxerr_g": [1.0] * 4,
+                "flux_r": [5.0] * 4,
+                "fluxerr_r": [1.0] * 4,
+            }
+        )
+        config = {
+            "id": "report_test",
+            "catalog": "configs/catalogs/test.yaml",
+            "selection": {
+                "foreground_z": [0.2, 0.5],
+                "background_z": [0.7, 1.4],
+                "shared_query": "mask_ok and quality_ok",
+                "photoz_max_sigma": 0.1,
+            },
+            "footprint": {
+                "enabled": True,
+                "columns": ["object_id", "field", "pixel"],
+            },
+        }
+
+        result = select_samples_with_report(
+            catalog,
+            config,
+            bands=["g", "r"],
+            photometry="flux",
+        )
+        with TemporaryDirectory() as tmp:
+            write_sample_outputs(result.samples, tmp, report=result.report)
+            report_md = Path(tmp) / "sample_report.md"
+            report_json = Path(tmp) / "sample_report.json"
+
+            self.assertTrue(report_md.exists())
+            self.assertTrue(report_json.exists())
+            markdown = report_md.read_text(encoding="utf-8")
+            self.assertIn("## Shared Selection Funnel", markdown)
+            self.assertIn("| photoz_max_sigma | 3 | 2 | 1 |", markdown)
+            self.assertIn("## Field Summary", markdown)
+
+            data = json.loads(report_json.read_text(encoding="utf-8"))
+            self.assertEqual(data["final"]["foreground_rows"], 1)
+            self.assertEqual(data["final"]["background_rows"], 2)
+            self.assertEqual(
+                {row["field"]: row["total_sample_rows"] for row in data["fields"]},
+                {"A": 2, "B": 1},
+            )
+
     def test_cleaning_and_observables_do_not_overwrite_raw_photometry(self) -> None:
         catalog = pd.DataFrame(
             {
@@ -946,15 +1163,147 @@ class CatalogSampleSliceTest(unittest.TestCase):
         self.assertTrue(np.isnan(enriched.loc[2, "stellar_mass_log"]))
         self.assertTrue(np.isnan(enriched.loc[3, "stellar_mass_log"]))
 
+    def test_kcorrect_enrichment_batches_valid_rows(self) -> None:
+        class FakeKcorrect:
+            redshifts: list[np.ndarray] = []
+
+            def __init__(self, *, responses: list[str]) -> None:
+                self.responses = responses
+
+            def fit_coeffs(
+                self,
+                *,
+                redshift: np.ndarray,
+                maggies: np.ndarray,
+                ivar: np.ndarray,
+            ) -> np.ndarray:
+                self.redshifts.append(np.asarray(redshift, dtype=float).copy())
+                return np.ones((len(redshift), len(self.responses)))
+
+            def absmag(
+                self,
+                *,
+                redshift: np.ndarray,
+                maggies: np.ndarray,
+                ivar: np.ndarray,
+                coeffs: np.ndarray,
+            ) -> np.ndarray:
+                del maggies, ivar, coeffs
+                return -20.0 - redshift[:, None]
+
+            def derived(
+                self,
+                *,
+                redshift: np.ndarray,
+                coeffs: np.ndarray,
+            ) -> dict[str, np.ndarray]:
+                del coeffs
+                return {"mremain": 10.0 ** (10.0 + redshift)}
+
+        package = types.ModuleType("kcorrect")
+        package.__path__ = []
+        module = types.ModuleType("kcorrect.kcorrect")
+        module.Kcorrect = FakeKcorrect
+        catalog = pd.DataFrame(
+            {
+                "z_phot": [0.1, 0.2, -1.0, 0.3, 0.4, 0.5],
+                "flux_u": [10.0, 11.0, 12.0, 13.0, 14.0, 15.0],
+                "fluxerr_u": [1.0, 1.1, 1.2, 1.3, 1.4, 1.5],
+            }
+        )
+
+        with patch.dict(
+            sys.modules,
+            {"kcorrect": package, "kcorrect.kcorrect": module},
+        ):
+            enriched = apply_kcorrect(
+                catalog,
+                {
+                    "responses": ["u"],
+                    "response_bands": ["u"],
+                    "absmag_bands": ["u"],
+                    "batch_size": 2,
+                },
+            )
+
+        self.assertEqual(len(FakeKcorrect.redshifts), 3)
+        np.testing.assert_allclose(FakeKcorrect.redshifts[0], [0.1, 0.2])
+        np.testing.assert_allclose(FakeKcorrect.redshifts[1], [0.3, 0.4])
+        np.testing.assert_allclose(FakeKcorrect.redshifts[2], [0.5])
+        np.testing.assert_allclose(
+            enriched["absmag_u"],
+            [-20.1, -20.2, np.nan, -20.3, -20.4, -20.5],
+        )
+        np.testing.assert_allclose(
+            enriched["stellar_mass_log"],
+            [10.1, 10.2, np.nan, 10.3, 10.4, 10.5],
+        )
+
+    def test_kcorrect_enrichment_reports_saved_model_response_mismatches(
+        self,
+    ) -> None:
+        class FakeKcorrect:
+            def __init__(
+                self,
+                *,
+                filename: str | None = None,
+                responses: list[str] | None = None,
+            ) -> None:
+                del filename, responses
+                self.responses = ["u", "g"]
+
+        package = types.ModuleType("kcorrect")
+        package.__path__ = []
+        module = types.ModuleType("kcorrect.kcorrect")
+        module.Kcorrect = FakeKcorrect
+        catalog = pd.DataFrame(
+            {
+                "z_phot": [0.1],
+                "flux_u": [10.0],
+                "fluxerr_u": [1.0],
+            }
+        )
+
+        with patch.dict(
+            sys.modules,
+            {"kcorrect": package, "kcorrect.kcorrect": module},
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "model has 2 responses but configured responses has 1",
+            ):
+                apply_kcorrect(
+                    catalog,
+                    {
+                        "model": "saved.fits",
+                        "responses": ["u"],
+                        "response_bands": ["u"],
+                    },
+                )
+
+            with self.assertRaisesRegex(
+                ValueError,
+                "model has 2 responses but response_bands has 1",
+            ):
+                apply_kcorrect(
+                    catalog,
+                    {
+                        "model": "saved.fits",
+                        "response_bands": ["u"],
+                    },
+                )
+
     def test_kcorrect_response_paths_are_normalized_to_stems(self) -> None:
         responses = KcorrectEnrichment.resolve_response_names(
             [
-                "data/bandpasses/bandpass_u_v1p9.dat",
+                "data/bandpasses/rubin_bandpass_u_v1.9.1.dat",
                 "sdss_g0",
             ]
         )
 
-        self.assertTrue(responses[0].endswith("data/bandpasses/bandpass_u_v1p9"))
+        self.assertTrue(
+            responses[0].endswith("data/bandpasses/rubin_bandpass_u_v1.9.1")
+        )
         self.assertFalse(responses[0].endswith(".dat"))
         self.assertTrue(Path(responses[0]).is_absolute())
         self.assertEqual(responses[1], "sdss_g0")
@@ -1163,10 +1512,7 @@ class CatalogSampleSliceTest(unittest.TestCase):
         random_corrected = (
             result["g-i_forward_avg"]
             - result["g-i_random_forward_avg"]
-            - (
-                result["g-i_forward_ref_avg"]
-                - result["g-i_random_forward_ref_avg"]
-            )
+            - (result["g-i_forward_ref_avg"] - result["g-i_random_forward_ref_avg"])
         )
         flip_and_random_corrected = (
             result["g-i_forward_avg"]

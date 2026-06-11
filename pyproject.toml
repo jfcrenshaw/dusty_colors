@@ -29,6 +29,7 @@ dependencies = [
     "scikit-learn>=1.7",
     "seaborn>=0.13",
     "dust_extinction>=1.7",
+    "pzserver>=0.3",
 ]
 
 [tool.setuptools.packages.find]

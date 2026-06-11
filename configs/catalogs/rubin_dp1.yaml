@@ -1,0 +1,68 @@
+id: rubin_dp1
+adapter: rubin_dp1
+primary_source: objects
+sources:
+  objects:
+    path: data/rubin_dp1/80_dp1_gold_all_sitcomtn154.parquet
+  photoz:
+    path: data/rubin_dp1/128_pz_table_dp1_all_gold_baseline_sitcomtn154.parquet
+    join:
+      left_key: objectId
+      right_key: objectId
+      how: inner
+      validate: one_to_one
+  specz:
+    # The downloaded match parquet files do not currently include objectId, so
+    # join the saved files by the exact object-table coordinates they carry.
+    files:
+      - path: data/rubin_dp1/81_training_v1_match_prelim_sitcomtn154.parquet
+      - path: data/rubin_dp1/82_test_v1_match_prelim_sitcomtn154.parquet
+    finite: [redshift]
+    columns: [i_ra, i_dec, redshift]
+    drop_duplicates: [i_ra, i_dec]
+    join:
+      left_key: [coord_ra, coord_dec]
+      right_key: [i_ra, i_dec]
+      how: left
+      validate: many_to_one
+bands: [g, r, i, z]
+photometry: flux
+flux_type: gaap1p0
+auxiliary_flux_types: [cModel]
+photoz:
+  combine:
+    estimates:
+      - z: fzboost_z_mode
+        err_low: fzboost_z_err68_low
+        err_high: fzboost_z_err68_high
+      - z: lephare_z_mode
+        err_low: lephare_z_err68_low
+        err_high: lephare_z_err68_high
+    diff_col: z_phot_diff
+extinction:
+  enabled: false
+enrichments:
+  kcorrect:
+    enabled: true
+    responses:
+      - data/bandpasses/rubin_bandpass_g_v1.9.1.dat
+      - data/bandpasses/rubin_bandpass_r_v1.9.1.dat
+      - data/bandpasses/rubin_bandpass_i_v1.9.1.dat
+      - data/bandpasses/rubin_bandpass_z_v1.9.1.dat
+    response_bands: [g, r, i, z]
+    absmag_bands: [g, r, i, z]
+    max_redshift: 0.5
+    stellar_mass_col: stellar_mass_log
+  halo_mass:
+    enabled: true
+    stellar_mass_col: stellar_mass_log
+    stellar_mass_is_log: true
+    halo_mass_col: halo_mass_log
+    r200_col: r200_mpc
+footprint:
+  nside: 1024
+  fields:
+    ECDFS: { ra: 53.13, dec: -28.10 }
+    EDFS: { ra: 59.10, dec: -48.73 }
+    "Rubin SV 95 -25": { ra: 95.00, dec: -25.00 }
+    "Rubin SV 38 7": { ra: 37.86, dec: 6.98 }

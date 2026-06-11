@@ -52,7 +52,7 @@ Catalog YAML owns raw input adaptation and footprint metadata:
 
 ```yaml
 id: dp1
-adapter: dp1
+adapter: rubin_dp1
 primary_source: objects
 sources:
   objects:
@@ -182,7 +182,7 @@ Photometry columns may be provided in either flux or magnitude form:
 
 The first adapters should be:
 
-- `dp1`: maps assembled DP1 object, photo-z, and optional spec-z sources into canonical names.
+- `rubin_dp1`: maps assembled Rubin DP1 object, photo-z, and optional spec-z sources into canonical names.
 - `clauds_sextractor`: maps CLAUDS-HSC SourceExtractor physical-parameter catalogs using columns such as `RA`, `DEC`, `ZPHOT`, `ZPDF_L68`, `ZPDF_U68`, `OBJ_TYPE`, `MASK`, `MASS_MED`, and HSC/CLAUDS magnitudes.
 
 ## Implementation Modules

@@ -1,5 +1,5 @@
 id: dp1_default
-catalog: configs/catalogs/dp1.yaml
+catalog: configs/catalogs/rubin_dp1.yaml
 selection:
   foreground_z: [0.2, 0.5]
   background_z: [0.7, 1.4]
@@ -9,7 +9,7 @@ selection:
     depth_sigma: 10
     aggregate: median
     valid_range:
-      bands: [u, g, r, i, z, y]
+      bands: [g, r, i, z]
       min: 20.0
       max: 30.0
     min_occupancy: 30
@@ -25,9 +25,6 @@ selection:
     fluxerr_template: cmodel_fluxerr_{band}
     bands:
       r: 20
-  blendedness_max:
-    column: blendedness_i
-    value: 0.42
   magnitude_limits:
     - band: r
       min: 18.0

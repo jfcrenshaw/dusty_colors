@@ -61,7 +61,7 @@ schema, add optional catalog-level corrections/enrichments, and write
 
 Useful catalog options:
 
-- `adapter`: currently `dp1` or `clauds_sextractor`; adapter options include
+- `adapter`: currently `rubin_dp1` or `clauds_sextractor`; adapter options include
   `bands`, `photometry` (`flux` or `mag`), `columns` for canonical column
   mapping, DP1 `flux_type`/`extendedness_min`, and CLAUDS `mag_kind`,
   `band_prefix`, `band_map`, `field`, and `apply_aperture_offset`.

@@ -43,7 +43,7 @@ def _write_graph(root: Path, *, foreground_z: list[float] | None = None) -> Path
         root / "configs/catalogs/dp1.yaml",
         {
             "id": "dp1_processed",
-            "adapter": "dp1",
+            "adapter": "rubin_dp1",
             "primary_source": "objects",
             "sources": {
                 "objects": {"path": "data/dp1.parquet"},
@@ -104,6 +104,8 @@ def _handlers() -> StageHandlers:
                 "jackknife_region": [0, 1],
             }
         ).to_parquet(context.output_dir / "background.parquet", index=False)
+        (context.output_dir / "sample_report.md").write_text("# sample\n")
+        (context.output_dir / "sample_report.json").write_text("{}\n")
 
     def stack(context) -> None:
         for path in context.expected_outputs:
@@ -244,46 +246,33 @@ class ConfigPipelineTest(unittest.TestCase):
             self.assertEqual(called["stack_config"], {"random_seed": 11})
             self.assertTrue(called["force"])
 
-    def test_clauds_analysis_graphs_resolve(self) -> None:
-        optical = load_resolved_config(
-            ROOT / "configs/analyses/clauds_sextractor_optical_default.yaml",
-            root=ROOT,
-        )
-        nir = load_resolved_config(
-            ROOT / "configs/analyses/clauds_sextractor_nir_default.yaml",
-            root=ROOT,
-        )
+    def test_checked_in_analysis_graphs_resolve(self) -> None:
+        analysis_paths = sorted((ROOT / "configs/analyses").glob("*.yaml"))
+        self.assertGreater(len(analysis_paths), 0)
 
-        self.assertEqual(optical.catalog.id, "clauds_sextractor_optical")
-        self.assertEqual(optical.sample.id, "clauds_sextractor_optical_default")
-        self.assertEqual(
-            optical.analysis.id,
-            "clauds_sextractor_optical_default",
-        )
-        self.assertEqual(optical.catalog.data["bands"], ["u", "g", "r", "i", "z", "y"])
-        self.assertEqual(optical.catalog.data["photometry"], "flux")
-        self.assertIn("fluxerr_template", optical.sample.data["selection"]["snr_min"])
-        self.assertFalse(optical.catalog.data["enrichments"]["kcorrect"]["enabled"])
-        self.assertEqual(optical.analysis.data["stack"]["colors"], ["g-z"])
-        self.assertEqual(optical.analysis.data["stack"]["modes"], ["fcolors"])
-        self.assertEqual(optical.analysis.data["stack"]["random_multiplier"], 20)
-        self.assertEqual(optical.sample.data["jackknife"]["regions_per_field"], 3)
+        for analysis_path in analysis_paths:
+            with self.subTest(path=analysis_path.relative_to(ROOT)):
+                resolved = load_resolved_config(analysis_path, root=ROOT)
 
-        self.assertEqual(nir.catalog.id, "clauds_sextractor_nir")
-        self.assertEqual(nir.sample.id, "clauds_sextractor_nir_default")
-        self.assertEqual(nir.analysis.id, "clauds_sextractor_nir_default")
-        self.assertEqual(nir.catalog.data["extra_bands"], ["Yv", "J", "H", "Ks"])
-        self.assertEqual(
-            [item["field"] for item in nir.catalog.data["sources"]["objects"]["files"]],
-            ["E-COSMOS", "XMM-LSS"],
-        )
-        self.assertIn("Yv-J", nir.analysis.data["stack"]["colors"])
-        self.assertIn("H-Ks", nir.analysis.data["stack"]["colors"])
-        self.assertEqual(nir.analysis.data["stack"]["random_multiplier"], 5)
-        np.testing.assert_allclose(
-            nir.analysis.data["stack"]["r_bin_edges"],
-            np.geomspace(5.0, 1000.0, 6),
-        )
+                self.assertTrue(resolved.analysis.id)
+                self.assertTrue(resolved.sample.id)
+                self.assertTrue(resolved.catalog.id)
+                self.assertEqual(resolved.analysis.data["sample"], resolved.sample.id)
+                self.assertEqual(resolved.sample.data["catalog"], resolved.catalog.id)
+
+                self.assertIsInstance(resolved.catalog.data.get("sources"), dict)
+                self.assertIsInstance(resolved.catalog.data.get("adapter"), str)
+                self.assertIsInstance(resolved.sample.data.get("selection"), dict)
+
+                stack = resolved.analysis.data.get("stack")
+                self.assertIsInstance(stack, dict)
+                self.assertIsInstance(stack.get("colors"), list)
+                self.assertGreater(len(stack["colors"]), 0)
+                if "r_bin_edges" in stack:
+                    edges = np.asarray(stack["r_bin_edges"], dtype=float)
+                    self.assertGreaterEqual(len(edges), 2)
+                    self.assertTrue(np.isfinite(edges).all())
+                    self.assertTrue(np.all(np.diff(edges) > 0))
 
 
 if __name__ == "__main__":

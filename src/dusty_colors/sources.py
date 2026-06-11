@@ -116,11 +116,17 @@ def join_source(
 ) -> pd.DataFrame:
     """Join one secondary source table onto the assembled primary table."""
     kwargs = _join_kwargs(config, source_name)
-    right_key = kwargs.pop("_right_key", None)
+    right_keys = kwargs.pop("_right_keys", [])
     drop_right_key = kwargs.pop("_drop_right_key")
     joined = left.merge(right, **kwargs)
-    if drop_right_key and right_key in joined and right_key not in left:
-        joined = joined.drop(columns=[right_key])
+    if drop_right_key:
+        drop = [
+            right_key
+            for right_key in right_keys
+            if right_key in joined and right_key not in left
+        ]
+        if drop:
+            joined = joined.drop(columns=drop)
     return joined
 
 
@@ -280,10 +286,10 @@ def _join_kwargs(config: Mapping[str, Any], source_name: str) -> dict[str, Any]:
     suffixes = tuple(config.get("suffixes", ["", f"_{source_name}"]))
     kwargs: dict[str, Any] = {"how": how, "suffixes": suffixes}
 
-    right_key: str | None = None
+    right_key: Any = None
     if "on" in config:
         kwargs["on"] = config["on"]
-        right_key = str(config["on"])
+        right_key = config["on"]
     else:
         left_key = config.get("left_key")
         right_key = config.get("right_key", left_key)
@@ -294,13 +300,19 @@ def _join_kwargs(config: Mapping[str, Any], source_name: str) -> dict[str, Any]:
 
     if "validate" in config:
         kwargs["validate"] = config["validate"]
-    kwargs["_right_key"] = str(right_key)
+    kwargs["_right_keys"] = _join_key_columns(right_key)
     kwargs["_drop_right_key"] = bool(config.get("drop_right_key", True))
     return kwargs
 
 
 def _join_right_columns(config: Mapping[str, Any]) -> list[str]:
     if "on" in config:
-        return [str(config["on"])]
+        return _join_key_columns(config["on"])
     right_key = config.get("right_key")
-    return [] if right_key is None else [str(right_key)]
+    return [] if right_key is None else _join_key_columns(right_key)
+
+
+def _join_key_columns(value: Any) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return [str(value)]
