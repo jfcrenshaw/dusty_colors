@@ -6,7 +6,7 @@ selection:
   shared_query: z_phot_err < 0.2 and z_phot_diff < 0.2
   pixel_depth_cuts:
     fluxerr_template: cmodel_fluxerr_{band}
-    depth_sigma: 10
+    depth_sigma: 5
     aggregate: median
     valid_range:
       bands: [g, r, i, z]

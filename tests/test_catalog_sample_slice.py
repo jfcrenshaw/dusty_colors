@@ -1534,6 +1534,76 @@ class CatalogSampleSliceTest(unittest.TestCase):
         np.testing.assert_allclose(result["g-i_avg"], [5.125, 11.625])
         self.assertEqual(float(provenance["g-i_random_flipped_ref_raw_avg"]), 0.125)
 
+    def test_treecorr_stacker_depth_weights_randoms_to_match_real_distribution(
+        self,
+    ) -> None:
+        def fluxerr_from_depth(depth: float) -> float:
+            return 10 ** ((31.4 - depth) / 2.5) / 5.0
+
+        stacker = TreeCorrStacker(
+            foreground=pd.DataFrame(),
+            background=pd.DataFrame(),
+            out_dir="unused",
+            colors=("g-r",),
+            random_weighting={
+                "depth": {
+                    "bands": ["g"],
+                    "fluxerr_template": "cmodel_fluxerr_{band}",
+                    "depth_sigma": 5,
+                },
+                "n_bins": 2,
+                "stratify_by_patch": False,
+            },
+        )
+        real = pd.DataFrame(
+            {
+                "pixel": [1, 1, 2, 2],
+                "cmodel_fluxerr_g": [
+                    fluxerr_from_depth(20.5),
+                    fluxerr_from_depth(20.5),
+                    fluxerr_from_depth(25.5),
+                    fluxerr_from_depth(25.5),
+                ],
+            }
+        )
+        random = pd.DataFrame({"pixel": [1, 2, 2, 2]})
+
+        weights = stacker._random_catalog_weights(
+            real,
+            random,
+            stacker._random_weighting_config("foreground"),
+            label="foreground",
+        )
+
+        np.testing.assert_allclose(weights, [2.0, 2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0])
+        self.assertAlmostEqual(float(weights[0]), float(np.sum(weights[1:])))
+
+    def test_treecorr_stacker_passes_depth_weights_to_random_catalogs(self) -> None:
+        stacker = TreeCorrStacker(
+            foreground=pd.DataFrame(),
+            background=pd.DataFrame(),
+            out_dir="unused",
+        )
+        stacker._random_foreground = pd.DataFrame({"ra": [1.0, 2.0], "dec": [0.0, 0.0]})
+        stacker._random_foreground_da = np.array([1000.0, 2000.0])
+        stacker._random_foreground_weight = np.array([2.0, 0.5])
+        stacker._random_background = pd.DataFrame({"ra": [3.0, 4.0], "dec": [0.0, 0.0]})
+        stacker._random_background_weight = np.array([1.5, 0.25])
+        captured: list[np.ndarray | None] = []
+
+        def catalog(catalog_arg, radial_distance, *, k=None, w=None):
+            del catalog_arg, radial_distance, k
+            captured.append(None if w is None else np.asarray(w).copy())
+            return object()
+
+        stacker._catalog = catalog
+
+        stacker._random_foreground_position_catalog()
+        stacker._random_background_position_catalog()
+
+        np.testing.assert_allclose(captured[0], [2.0, 0.5])
+        np.testing.assert_allclose(captured[1], [1.5, 0.25])
+
 
 if __name__ == "__main__":
     unittest.main()

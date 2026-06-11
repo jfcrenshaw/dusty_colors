@@ -3,10 +3,17 @@ sample: configs/samples/dp1_no_clean.yaml
 stack:
   colors: [g-z, g-r, r-i, i-z]
   modes: [fcolors]
-  r_bin_edges: [10, 15, 40, 120, 350, 1000]
+  r_bin_edges: [10, 15, 40, 120, 1000]
   reference_annulus: [2000.0, 4000.0]
   snr_max: 100
   random_correction: true
   random_multiplier: 100
+  random_weighting:
+    enabled: true
+    depth:
+      bands: [g, r, i, z]
+      fluxerr_template: cmodel_fluxerr_{band}
+      depth_sigma: 5
+    n_bins: 3
   random_seed: 42
   jackknife: true

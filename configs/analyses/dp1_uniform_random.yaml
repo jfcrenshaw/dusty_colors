@@ -1,4 +1,4 @@
-id: dp1_no_random
+id: dp1_uniform_random
 sample: configs/samples/dp1_default.yaml
 stack:
   colors: [g-z, g-r, r-i, i-z]
@@ -6,6 +6,9 @@ stack:
   r_bin_edges: [10, 15, 40, 120, 1000]
   reference_annulus: [2000.0, 4000.0]
   snr_max: 100
-  random_correction: false
+  random_correction: true
+  random_multiplier: 100
+  random_weighting:
+    enabled: false
   random_seed: 42
   jackknife: true

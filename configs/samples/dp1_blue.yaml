@@ -1,12 +1,12 @@
 id: dp1_blue
-catalog: configs/catalogs/rubin_dp1_pai24.yaml
+catalog: configs/catalogs/rubin_dp1.yaml
 selection:
   foreground_z: [0.2, 0.5]
   background_z: [0.7, 1.4]
   shared_query: z_phot_err < 0.2 and z_phot_diff < 0.2
   pixel_depth_cuts:
     fluxerr_template: cmodel_fluxerr_{band}
-    depth_sigma: 10
+    depth_sigma: 5
     aggregate: median
     valid_range:
       bands: [g, r, i, z]
