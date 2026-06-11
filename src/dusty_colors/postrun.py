@@ -30,7 +30,7 @@ def run_post_run_analyses(
     outputs.extend(
         _write_analysis_catalog_stats(
             resolved,
-            stack_dir=stack_path,
+            sample_dir=sample_path,
         )
     )
     outputs.extend(
@@ -55,14 +55,14 @@ def run_post_run_analyses(
 def _write_analysis_catalog_stats(
     resolved: ResolvedConfig,
     *,
-    stack_dir: Path,
+    sample_dir: Path,
 ) -> tuple[Path, ...]:
     from .analysis_stats import save_analysis_catalog_stats
 
     try:
         return save_analysis_catalog_stats(
             resolved.analysis.path,
-            stack_dir,
+            sample_dir,
             root=resolved.root,
             require_current=True,
         )

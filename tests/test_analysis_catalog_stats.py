@@ -27,7 +27,7 @@ def _write_graph(root: Path, *, jackknife: bool = True) -> Path:
         root / "configs/catalogs/test.yaml",
         {
             "id": "test_catalog",
-            "adapter": "dp1",
+            "adapter": "rubin_dp1",
             "primary_source": "objects",
             "sources": {"objects": {"path": "data/raw.parquet"}},
             "footprint": {"nside": 1},
@@ -129,15 +129,18 @@ class AnalysisCatalogStatsTest(unittest.TestCase):
             analysis_path = _write_graph(root)
             _write_samples(root)
 
+            sample_dir = root / "results/samples/test_sample"
             text_path, json_path = save_analysis_catalog_stats(
                 analysis_path,
-                root / "results/stacks/test_analysis",
+                sample_dir,
                 root=root,
                 require_current=False,
             )
 
             self.assertTrue(text_path.exists())
             self.assertTrue(json_path.exists())
+            self.assertEqual(text_path.parent, sample_dir)
+            self.assertEqual(json_path.parent, sample_dir)
             self.assertIn("foreground_galaxies: 2", text_path.read_text())
             data = yaml.safe_load(json_path.read_text())
             self.assertEqual(data["analysis_id"], "test_analysis")

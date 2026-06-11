@@ -217,6 +217,8 @@ def build_stage_specs(
             expected_outputs=(
                 sample_dir / "foreground.parquet",
                 sample_dir / "background.parquet",
+                sample_dir / "sample_report.md",
+                sample_dir / "sample_report.json",
             ),
             input_hashes=sample_input_hashes,
             stage_hash=sample_hash,
@@ -529,6 +531,7 @@ def _wrap_domain_handler(
                 context.output_dir,
                 bands=catalog_config.get("bands"),
                 photometry=catalog_config.get("photometry"),
+                nside=_catalog_nside(catalog_config),
             )
 
         return run_sample
@@ -553,6 +556,13 @@ def _wrap_domain_handler(
         return run_stack
 
     raise PipelineError(f"Unknown stage kind: {kind}")
+
+
+def _catalog_nside(catalog_config: Mapping[str, Any]) -> int | None:
+    footprint = catalog_config.get("footprint", {})
+    if isinstance(footprint, Mapping) and "nside" in footprint:
+        return int(footprint["nside"])
+    return None
 
 
 def _stage_result(

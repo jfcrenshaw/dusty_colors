@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import json
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,7 @@ from .cleaning import apply_minimal_cleaning, clean_sample
 from .footprint import assign_jackknife_regions
 
 MAGSYS_ZEROPOINT = 31.4
+FULL_SKY_DEG2 = 4.0 * np.pi * (180.0 / np.pi) ** 2
 
 
 class SampleSelector:
@@ -39,20 +41,36 @@ class SampleSelector:
         self.photometry = photometry
 
     def select(self) -> dict[str, pd.DataFrame]:
+        return self.select_with_report().samples
+
+    def select_with_report(self) -> SampleSelectionResult:
         selected = self._valid_catalog_rows()
-        selected = self._apply_shared_selection(selected)
+        stages = [
+            _stage_summary("catalog_input", self.catalog),
+            _stage_summary("minimal_valid_rows", selected),
+        ]
+        selected, shared_stages = _trace_shared_selection(selected, self.selection)
+        stages.extend(shared_stages)
         selected = self._assign_jackknife(selected)
+        stages.append(_stage_summary("jackknife_assignment", selected))
         footprint = self._footprint(selected)
 
-        foreground = self._sample(selected, "foreground")
-        background = self._sample(selected, "background")
+        foreground, foreground_stages = self._sample_with_stages(selected, "foreground")
+        background, background_stages = self._sample_with_stages(selected, "background")
         if len(foreground) == 0 or len(background) == 0:
             raise ValueError("Foreground and background samples must both be non-empty")
 
         samples = {"foreground": foreground, "background": background}
         if footprint is not None:
             samples["footprint"] = footprint
-        return samples
+        report = _sample_report(
+            self.config,
+            samples,
+            stages=stages,
+            foreground_stages=foreground_stages,
+            background_stages=background_stages,
+        )
+        return SampleSelectionResult(samples=samples, report=report)
 
     def _valid_catalog_rows(self) -> pd.DataFrame:
         return apply_minimal_cleaning(
@@ -75,14 +93,38 @@ class SampleSelector:
         return _sample_footprint(catalog, self.config.get("footprint"))
 
     def _sample(self, catalog: pd.DataFrame, sample: str) -> pd.DataFrame:
+        return self._sample_with_stages(catalog, sample)[0]
+
+    def _sample_with_stages(
+        self,
+        catalog: pd.DataFrame,
+        sample: str,
+    ) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
         sample_catalog = _redshift_slice(catalog, self.selection[f"{sample}_z"])
+        stages = [_stage_summary(f"{sample}_redshift_window", sample_catalog)]
         query = self.selection.get(f"{sample}_query")
         if query:
             sample_catalog = sample_catalog.query(str(query)).reset_index(drop=True)
-        return clean_sample(
+            stages.append(_stage_summary(f"{sample}_query", sample_catalog))
+        cleaned = clean_sample(
             sample_catalog,
             _cleaning_for_sample(self.cleaning, sample),
         )
+        stages.append(_stage_summary(f"{sample}_cleaning", cleaned))
+        return cleaned, stages
+
+
+class SampleSelectionResult:
+    """Prepared samples plus their human/report metadata."""
+
+    def __init__(
+        self,
+        *,
+        samples: dict[str, pd.DataFrame],
+        report: dict[str, Any],
+    ) -> None:
+        self.samples = samples
+        self.report = report
 
 
 def select_samples(
@@ -101,9 +143,27 @@ def select_samples(
     ).select()
 
 
+def select_samples_with_report(
+    catalog: pd.DataFrame,
+    config: Mapping[str, Any],
+    *,
+    bands: list[str] | None = None,
+    photometry: str | None = None,
+) -> SampleSelectionResult:
+    """Return foreground/background samples and a stage-by-stage report."""
+    return SampleSelector(
+        catalog,
+        config,
+        bands=bands,
+        photometry=photometry,
+    ).select_with_report()
+
+
 def write_sample_outputs(
     samples: Mapping[str, pd.DataFrame],
     output_dir: str | Path,
+    *,
+    report: Mapping[str, Any] | None = None,
 ) -> None:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -111,6 +171,22 @@ def write_sample_outputs(
     samples["background"].to_parquet(output_dir / "background.parquet", index=False)
     if "footprint" in samples:
         samples["footprint"].to_parquet(output_dir / "footprint.parquet", index=False)
+    if report is not None:
+        write_sample_report(report, output_dir)
+
+
+def write_sample_report(report: Mapping[str, Any], output_dir: str | Path) -> None:
+    """Write readable and machine-readable sample selection reports."""
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "sample_report.md").write_text(
+        format_sample_report(report),
+        encoding="utf-8",
+    )
+    (output_dir / "sample_report.json").write_text(
+        json.dumps(_json_ready(report), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def prepare_sample(
@@ -120,18 +196,351 @@ def prepare_sample(
     *,
     bands: list[str] | None = None,
     photometry: str | None = None,
+    nside: int | None = None,
 ) -> None:
     """Select and write foreground/background samples from canonical parquet."""
     path = Path(catalog_path_or_dir)
     catalog_path = path / "catalog.parquet" if path.is_dir() else path
     catalog = pd.read_parquet(catalog_path)
-    samples = select_samples(
+    result = select_samples_with_report(
         catalog,
         config,
         bands=bands,
         photometry=photometry,
     )
-    write_sample_outputs(samples, output_dir)
+    if nside is not None:
+        result.report["nside"] = int(nside)
+        _add_area_metrics(result.report, result.samples, int(nside))
+    write_sample_outputs(result.samples, output_dir, report=result.report)
+
+
+def _trace_shared_selection(
+    catalog: pd.DataFrame,
+    selection: Mapping[str, Any],
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    mask = np.ones(len(catalog), dtype=bool)
+    stages: list[dict[str, Any]] = []
+
+    if selection.get("shared_query"):
+        mask &= catalog.eval(str(selection["shared_query"])).astype(bool).to_numpy()
+        stages.append(_stage_summary("shared_query", catalog.loc[mask]))
+
+    pixel_depth_cuts = _enabled_option(selection, "pixel_depth_cuts")
+    if pixel_depth_cuts is not None:
+        if not isinstance(pixel_depth_cuts, Mapping):
+            raise ValueError("selection.pixel_depth_cuts must be a mapping")
+        depth_cuts = PixelDepthCuts(catalog, pixel_depth_cuts, mask)
+        if pixel_depth_cuts.get("valid_range"):
+            mask = depth_cuts._apply_valid_range(mask)
+            stages.append(_stage_summary("pixel_depth_valid_range", catalog.loc[mask]))
+        if pixel_depth_cuts.get("min_occupancy") is not None:
+            mask = depth_cuts._apply_min_occupancy(mask)
+            stages.append(
+                _stage_summary("pixel_depth_min_occupancy", catalog.loc[mask])
+            )
+        if pixel_depth_cuts.get("complete_to"):
+            mask = depth_cuts._apply_completeness(mask)
+            stages.append(_stage_summary("pixel_depth_complete_to", catalog.loc[mask]))
+        if pixel_depth_cuts.get("drop_shallowest"):
+            mask = depth_cuts._drop_shallowest_pixels(mask)
+            stages.append(
+                _stage_summary("pixel_depth_drop_shallowest", catalog.loc[mask])
+            )
+
+    pixel_occupancy_min = _enabled_option(selection, "pixel_occupancy_min")
+    if pixel_occupancy_min is not None:
+        mask &= _pixel_occupancy_mask(catalog, pixel_occupancy_min, mask)
+        stages.append(_stage_summary("pixel_occupancy_min", catalog.loc[mask]))
+
+    snr_min = _enabled_option(selection, "snr_min")
+    if snr_min is not None:
+        mask &= _snr_min_mask(catalog, snr_min)
+        stages.append(_stage_summary("snr_min", catalog.loc[mask]))
+
+    blendedness_max = _enabled_option(selection, "blendedness_max")
+    if blendedness_max is not None:
+        mask &= _max_column_mask(
+            catalog,
+            blendedness_max,
+            default_column="blendedness_i",
+            option_name="blendedness_max",
+        )
+        stages.append(_stage_summary("blendedness_max", catalog.loc[mask]))
+
+    magnitude_limits = _enabled_option(selection, "magnitude_limits")
+    if magnitude_limits is not None:
+        mask &= _magnitude_limit_mask(catalog, magnitude_limits)
+        stages.append(_stage_summary("magnitude_limits", catalog.loc[mask]))
+
+    if "photoz_max_sigma" in selection:
+        mask &= catalog["z_phot"].notna().to_numpy()
+        mask &= catalog["z_phot_err"].to_numpy(float) < float(
+            selection["photoz_max_sigma"]
+        )
+        stages.append(_stage_summary("photoz_max_sigma", catalog.loc[mask]))
+
+    photoz_estimate_sigma = _enabled_option(selection, "photoz_estimate_max_sigma")
+    if photoz_estimate_sigma is not None:
+        mask &= _photoz_estimate_sigma_mask(catalog, photoz_estimate_sigma)
+        stages.append(_stage_summary("photoz_estimate_max_sigma", catalog.loc[mask]))
+
+    photoz_diff_norm = _enabled_option(selection, "photoz_max_diff_norm")
+    if photoz_diff_norm is not None:
+        mask &= _photoz_diff_norm_mask(catalog, photoz_diff_norm)
+        stages.append(_stage_summary("photoz_max_diff_norm", catalog.loc[mask]))
+
+    if "photoz_max_sigma_norm" in selection:
+        max_sigma = float(selection["photoz_max_sigma_norm"])
+        mask &= catalog["z_phot_err"].to_numpy(float) < max_sigma * (
+            1.0 + catalog["z_phot"].to_numpy(float)
+        )
+        stages.append(_stage_summary("photoz_max_sigma_norm", catalog.loc[mask]))
+
+    return catalog.loc[mask].reset_index(drop=True), stages
+
+
+def _stage_summary(name: str, catalog: pd.DataFrame) -> dict[str, Any]:
+    summary: dict[str, Any] = {"stage": name, "rows": int(len(catalog))}
+    if "field" in catalog:
+        counts = catalog["field"].fillna("unknown").value_counts().sort_index()
+        summary["field_counts"] = {
+            str(field): int(count) for field, count in counts.items()
+        }
+    if "pixel" in catalog:
+        summary["unique_pixels"] = int(catalog["pixel"].dropna().nunique())
+    return summary
+
+
+def _sample_report(
+    config: Mapping[str, Any],
+    samples: Mapping[str, pd.DataFrame],
+    *,
+    stages: list[dict[str, Any]],
+    foreground_stages: list[dict[str, Any]],
+    background_stages: list[dict[str, Any]],
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "sample_id": str(config.get("id", "")),
+        "catalog": str(config.get("catalog", "")),
+        "stages": stages,
+        "foreground_stages": foreground_stages,
+        "background_stages": background_stages,
+        "final": {
+            "foreground_rows": int(len(samples["foreground"])),
+            "background_rows": int(len(samples["background"])),
+        },
+    }
+    if "footprint" in samples:
+        report["final"]["footprint_rows"] = int(len(samples["footprint"]))
+        report["final"]["footprint_pixels"] = (
+            int(samples["footprint"]["pixel"].dropna().nunique())
+            if "pixel" in samples["footprint"]
+            else None
+        )
+    report["fields"] = _field_report(samples)
+    return report
+
+
+def _field_report(samples: Mapping[str, pd.DataFrame]) -> list[dict[str, Any]]:
+    foreground = samples["foreground"]
+    background = samples["background"]
+    footprint = samples.get("footprint")
+    field_values: set[str] = set()
+    for frame in (foreground, background, footprint):
+        if frame is not None and "field" in frame:
+            field_values.update(
+                str(value) for value in frame["field"].dropna().unique()
+            )
+
+    rows = []
+    for field in sorted(field_values):
+        fg = _field_slice(foreground, field)
+        bg = _field_slice(background, field)
+        fp = _field_slice(footprint, field) if footprint is not None else None
+        row: dict[str, Any] = {
+            "field": field,
+            "foreground_rows": int(len(fg)),
+            "background_rows": int(len(bg)),
+            "total_sample_rows": int(len(fg) + len(bg)),
+        }
+        if fp is not None:
+            row["footprint_rows"] = int(len(fp))
+            if "pixel" in fp:
+                row["footprint_pixels"] = int(fp["pixel"].dropna().nunique())
+        for label, frame in (("foreground", fg), ("background", bg)):
+            if "jackknife_region" in frame:
+                row[f"{label}_jackknife_regions"] = [
+                    int(value)
+                    for value in sorted(frame["jackknife_region"].dropna().unique())
+                ]
+        if (
+            "foreground_jackknife_regions" in row
+            and "background_jackknife_regions" in row
+        ):
+            row["shared_jackknife_regions"] = sorted(
+                set(row["foreground_jackknife_regions"])
+                & set(row["background_jackknife_regions"])
+            )
+        rows.append(row)
+    return rows
+
+
+def _field_slice(catalog: pd.DataFrame | None, field: str) -> pd.DataFrame:
+    if catalog is None or "field" not in catalog:
+        return pd.DataFrame()
+    return catalog.loc[catalog["field"].astype(str) == field]
+
+
+def _add_area_metrics(
+    report: dict[str, Any],
+    samples: Mapping[str, pd.DataFrame],
+    nside: int,
+) -> None:
+    pixel_area = FULL_SKY_DEG2 / (12.0 * nside**2)
+    report["nside"] = int(nside)
+    report["pixel_area_deg2"] = float(pixel_area)
+    footprint = samples.get("footprint")
+    if footprint is not None and "pixel" in footprint:
+        pixels = int(footprint["pixel"].dropna().nunique())
+        report["final"]["footprint_area_deg2"] = pixels * pixel_area
+
+    field_lookup = {row["field"]: row for row in report.get("fields", [])}
+    if footprint is not None and {"field", "pixel"}.issubset(footprint.columns):
+        for field, group in footprint.groupby("field", dropna=False):
+            key = str(field)
+            row = field_lookup.get(key)
+            if row is None:
+                continue
+            pixels = int(group["pixel"].dropna().nunique())
+            row["footprint_area_deg2"] = pixels * pixel_area
+            total_rows = max(1, int(report["final"].get("footprint_rows", 0)))
+            total_area = max(
+                float(report["final"].get("footprint_area_deg2", 0.0)), 0.0
+            )
+            row["footprint_row_fraction"] = row.get("footprint_rows", 0) / total_rows
+            row["footprint_area_fraction"] = (
+                row["footprint_area_deg2"] / total_area if total_area > 0 else np.nan
+            )
+
+
+def format_sample_report(report: Mapping[str, Any]) -> str:
+    """Format a sample report as IDE-readable Markdown."""
+    sample_id = report.get("sample_id") or "sample"
+    lines = [
+        f"# Sample Report: {sample_id}",
+        "",
+    ]
+    if report.get("catalog"):
+        lines.extend([f"- Catalog: `{report['catalog']}`"])
+    if report.get("nside") is not None:
+        lines.append(f"- HEALPix nside: `{report['nside']}`")
+    final = report.get("final", {})
+    lines.extend(
+        [
+            f"- Foreground rows: `{int(final.get('foreground_rows', 0))}`",
+            f"- Background rows: `{int(final.get('background_rows', 0))}`",
+        ]
+    )
+    if final.get("footprint_area_deg2") is not None:
+        lines.append(
+            f"- Footprint area: `{float(final['footprint_area_deg2']):.6f} deg^2`"
+        )
+    lines.append("")
+
+    lines.extend(
+        _markdown_stage_table("Shared Selection Funnel", report.get("stages", []))
+    )
+    lines.extend(
+        _markdown_stage_table(
+            "Foreground Funnel",
+            report.get("foreground_stages", []),
+        )
+    )
+    lines.extend(
+        _markdown_stage_table(
+            "Background Funnel",
+            report.get("background_stages", []),
+        )
+    )
+    lines.extend(_markdown_field_table(report.get("fields", [])))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _markdown_stage_table(title: str, stages: Any) -> list[str]:
+    stages = list(stages or [])
+    if not stages:
+        return []
+    fields = _report_fields(stages)
+    lines = [f"## {title}", ""]
+    header = ["stage", "rows", *fields]
+    lines.append("| " + " | ".join(header) + " |")
+    lines.append("| " + " | ".join(["---"] * len(header)) + " |")
+    for stage in stages:
+        counts = dict(stage.get("field_counts", {}))
+        row = [
+            str(stage.get("stage", "")),
+            str(int(stage.get("rows", 0))),
+            *[str(int(counts.get(field, 0))) for field in fields],
+        ]
+        lines.append("| " + " | ".join(row) + " |")
+    lines.append("")
+    return lines
+
+
+def _markdown_field_table(fields: Any) -> list[str]:
+    rows = list(fields or [])
+    if not rows:
+        return []
+    columns = [
+        "field",
+        "footprint_rows",
+        "footprint_pixels",
+        "footprint_area_deg2",
+        "foreground_rows",
+        "background_rows",
+        "total_sample_rows",
+        "shared_jackknife_regions",
+    ]
+    lines = ["## Field Summary", ""]
+    lines.append("| " + " | ".join(columns) + " |")
+    lines.append("| " + " | ".join(["---"] * len(columns)) + " |")
+    for item in rows:
+        values = []
+        for col in columns:
+            value = item.get(col, "")
+            if isinstance(value, float):
+                value = f"{value:.6f}" if np.isfinite(value) else ""
+            elif isinstance(value, list):
+                value = ", ".join(str(v) for v in value)
+            values.append(str(value))
+        lines.append("| " + " | ".join(values) + " |")
+    lines.append("")
+    return lines
+
+
+def _report_fields(stages: list[Mapping[str, Any]]) -> list[str]:
+    fields = set()
+    for stage in stages:
+        fields.update(str(field) for field in stage.get("field_counts", {}))
+    return sorted(fields)
+
+
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_ready(val) for key, val in value.items()}
+    if isinstance(value, list):
+        return [_json_ready(val) for val in value]
+    if isinstance(value, tuple):
+        return [_json_ready(val) for val in value]
+    if isinstance(value, np.ndarray):
+        return [_json_ready(val) for val in value.tolist()]
+    if isinstance(value, np.generic):
+        return _json_ready(value.item())
+    if isinstance(value, float) and not np.isfinite(value):
+        return None
+    if isinstance(value, Path):
+        return str(value)
+    return value
 
 
 class SharedSelectionCuts:
