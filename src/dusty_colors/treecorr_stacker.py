@@ -14,6 +14,7 @@ import treecorr
 import yaml
 from astropy.cosmology import Planck18 as cosmo
 
+from .config import parse_array_spec, stable_hash
 from .observables import build_observable, observable_column_names
 
 ColorMode = Literal["fcolors", "mcolors"]
@@ -33,6 +34,7 @@ class _BinResult:
     raw_err: float
     weight: float
     npairs: float
+    r_perp: float
     corrs: tuple[Any, ...]
 
 
@@ -44,11 +46,13 @@ class _Profile:
     color_err: np.ndarray
     weight: np.ndarray
     npairs: np.ndarray
+    r_perp: np.ndarray
     ref_raw: float
     ref_raw_err: float
     ref_color: float
     ref_color_err: float
     ref_npairs: float
+    ref_r_perp: float
     corrs: list[tuple[Any, ...]]
 
 
@@ -126,6 +130,7 @@ class TreeCorrStacker:
     diagnostic_plots: bool = True
     diagnostic_photoz_bins: int | list[float] | np.ndarray = 40
     diagnostic_color_bins: int | list[float] | np.ndarray = 40
+    radial_rebinning: Mapping[str, Any] | bool | None = None
 
     def __post_init__(self) -> None:
         self.out_dir = Path(self.out_dir)
@@ -204,10 +209,14 @@ class TreeCorrStacker:
             print(f"TreeCorr stacking already done: {self.out_dir}")
             return
 
-        self._load_samples()
         bins = self._radial_bins()
         ref_bin = self._reference_bin()
 
+        if self._radial_rebinning_enabled():
+            self._run_rebinned(bins, ref_bin)
+            return
+
+        self._load_samples()
         print(f"Running TreeCorr stacking: {self.out_dir}")
         for mode in self.modes:
             self._run_mode(mode, bins, ref_bin)
@@ -879,6 +888,457 @@ class TreeCorrStacker:
         else:
             self._diagnostic_file(mode).unlink(missing_ok=True)
 
+    def _run_rebinned(self, bins: list[_RadialBin], ref_bin: _RadialBin) -> None:
+        print(f"Running TreeCorr stacking from radial cache: {self.out_dir}")
+        rebuild_cache = bool(
+            self._radial_rebinning_config().get("rebuild_cache", False)
+        )
+        samples_loaded = False
+        for mode in self.modes:
+            cache = None if rebuild_cache else self._load_basis_cache(mode)
+            if cache is None:
+                if not samples_loaded:
+                    self._load_samples()
+                    samples_loaded = True
+                cache = self._build_basis_cache(mode, ref_bin)
+            self._write_rebinned_mode(mode, bins, cache)
+        print("   TreeCorr radial rebinning complete")
+
+    def _build_basis_cache(
+        self, mode: ColorMode, ref_bin: _RadialBin
+    ) -> dict[str, np.ndarray]:
+        basis_edges = self._radial_basis_edges()
+        basis_bins = self._radial_bins_from_edges(basis_edges)
+        cache: dict[str, np.ndarray] = {
+            "cache_version": np.array(1),
+            "basis_cache_hash": np.array(
+                self._basis_cache_hash(mode, basis_edges),
+            ),
+            "mode": np.array(mode),
+            "colors": np.asarray(self.colors),
+            "basis_edges": basis_edges,
+            "basis_bin_centers": self._bin_centers(basis_bins),
+            "reference_annulus": np.asarray(self.reference_annulus, dtype=float),
+        }
+
+        print(
+            f"   building {mode} radial basis cache " f"({len(basis_bins)} bins)...",
+            end="",
+            flush=True,
+        )
+        for color in self.colors:
+            print(f" {color}", end="", flush=True)
+            background = self._observable(self.background, color, mode)
+            foreground = (
+                self._observable(self.foreground, color, mode)
+                if self.flipped_correction
+                else None
+            )
+
+            forward = self._profile(background, basis_bins, ref_bin, mode, "forward")
+            flipped = (
+                self._profile(foreground, basis_bins, ref_bin, mode, "flipped")
+                if foreground is not None
+                else None
+            )
+            random_forward = None
+            random_flipped = None
+            if self.random_correction:
+                random_forward = self._profile(
+                    background, basis_bins, ref_bin, mode, "forward", random=True
+                )
+                if foreground is not None:
+                    random_flipped = self._profile(
+                        foreground, basis_bins, ref_bin, mode, "flipped", random=True
+                    )
+
+            color_results, _ = self._result(
+                color,
+                basis_bins,
+                mode,
+                forward,
+                flipped,
+                random_forward,
+                random_flipped,
+            )
+            cache.update(self._profile_cache_arrays(color, "forward", forward))
+            if flipped is not None:
+                cache.update(self._profile_cache_arrays(color, "flipped", flipped))
+            if random_forward is not None:
+                cache.update(
+                    self._profile_cache_arrays(
+                        color,
+                        "random_forward",
+                        random_forward,
+                    )
+                )
+            if random_flipped is not None:
+                cache.update(
+                    self._profile_cache_arrays(
+                        color,
+                        "random_flipped",
+                        random_flipped,
+                    )
+                )
+            cache[f"{color}_basis_analytic_err"] = color_results[
+                f"{color}_analytic_err"
+            ]
+            if f"{color}_jackknife_samples" in color_results:
+                cache[f"{color}_basis_jackknife_samples"] = color_results[
+                    f"{color}_jackknife_samples"
+                ]
+
+        if self.diagnostic_plots:
+            cache.update(self._diagnostic_arrays(mode, basis_bins))
+
+        print(".")
+        np.savez_compressed(self._basis_cache_file(mode), **cache)
+        return cache
+
+    def _write_rebinned_mode(
+        self,
+        mode: ColorMode,
+        bins: list[_RadialBin],
+        cache: Mapping[str, np.ndarray],
+    ) -> None:
+        results: dict[str, np.ndarray] = {}
+        provenance: dict[str, np.ndarray] = {}
+
+        print(f"   rebinning {mode} radial basis...", end="", flush=True)
+        for color in self.colors:
+            print(f" {color}", end="", flush=True)
+            forward = self._rebinned_cached_profile(color, "forward", mode, bins, cache)
+            flipped = (
+                self._rebinned_cached_profile(color, "flipped", mode, bins, cache)
+                if self.flipped_correction
+                else None
+            )
+            random_forward = (
+                self._rebinned_cached_profile(
+                    color,
+                    "random_forward",
+                    mode,
+                    bins,
+                    cache,
+                )
+                if self.random_correction
+                else None
+            )
+            random_flipped = (
+                self._rebinned_cached_profile(
+                    color,
+                    "random_flipped",
+                    mode,
+                    bins,
+                    cache,
+                )
+                if self.random_correction and self.flipped_correction
+                else None
+            )
+
+            color_results, color_provenance = self._result(
+                color,
+                bins,
+                mode,
+                forward,
+                flipped,
+                random_forward,
+                random_flipped,
+            )
+            self._add_rebinned_jackknife(color, bins, cache, color_results)
+            results.update(color_results)
+            provenance.update(color_provenance)
+        print(".")
+
+        np.savez_compressed(self._stack_file(mode), **results)
+        np.savez_compressed(self._provenance_file(mode), **provenance)
+        if self.diagnostic_plots:
+            np.savez_compressed(
+                self._diagnostic_file(mode),
+                **self._rebinned_diagnostic_arrays(bins, cache),
+            )
+        else:
+            self._diagnostic_file(mode).unlink(missing_ok=True)
+
+    def _profile_cache_arrays(
+        self,
+        color: str,
+        component: str,
+        profile: _Profile,
+    ) -> dict[str, np.ndarray]:
+        prefix = f"{color}_{component}"
+        return {
+            f"{prefix}_raw": profile.raw,
+            f"{prefix}_raw_err": profile.raw_err,
+            f"{prefix}_weight": profile.weight,
+            f"{prefix}_npairs": profile.npairs,
+            f"{prefix}_r_perp": profile.r_perp,
+            f"{prefix}_ref_raw": np.array(profile.ref_raw),
+            f"{prefix}_ref_raw_err": np.array(profile.ref_raw_err),
+            f"{prefix}_ref_npairs": np.array(profile.ref_npairs),
+            f"{prefix}_ref_r_perp": np.array(profile.ref_r_perp),
+        }
+
+    def _rebinned_cached_profile(
+        self,
+        color: str,
+        component: str,
+        mode: ColorMode,
+        bins: list[_RadialBin],
+        cache: Mapping[str, np.ndarray],
+    ) -> _Profile:
+        prefix = f"{color}_{component}"
+        raw = np.asarray(cache[f"{prefix}_raw"], dtype=float)
+        weight = np.asarray(cache[f"{prefix}_weight"], dtype=float)
+        npairs = np.asarray(cache[f"{prefix}_npairs"], dtype=float)
+        r_perp = np.asarray(cache[f"{prefix}_r_perp"], dtype=float)
+
+        groups = self._basis_bin_groups(bins, cache)
+        rebinned_raw, rebinned_weight = self._rebin_weighted(raw, weight, groups)
+        rebinned_npairs = self._rebin_sum(npairs, groups)
+        rebinned_r_perp, _ = self._rebin_weighted(r_perp, weight, groups)
+        raw_err = np.full_like(rebinned_raw, np.nan, dtype=float)
+        good_weight = rebinned_weight > 0
+        raw_err[good_weight] = np.sqrt(1.0 / rebinned_weight[good_weight])
+        color_value, color_err = self._to_color(rebinned_raw, raw_err, mode)
+
+        ref_raw = float(np.asarray(cache[f"{prefix}_ref_raw"], dtype=float).item())
+        ref_raw_err = float(
+            np.asarray(cache[f"{prefix}_ref_raw_err"], dtype=float).item()
+        )
+        ref_color, ref_color_err = self._to_color(
+            np.array([ref_raw], dtype=float),
+            np.array([ref_raw_err], dtype=float),
+            mode,
+        )
+        return _Profile(
+            raw=rebinned_raw,
+            raw_err=raw_err,
+            color=color_value,
+            color_err=color_err,
+            weight=rebinned_weight,
+            npairs=rebinned_npairs,
+            r_perp=rebinned_r_perp,
+            ref_raw=ref_raw,
+            ref_raw_err=ref_raw_err,
+            ref_color=float(ref_color[0]),
+            ref_color_err=float(ref_color_err[0]),
+            ref_npairs=float(
+                np.asarray(cache[f"{prefix}_ref_npairs"], dtype=float).item()
+            ),
+            ref_r_perp=float(
+                np.asarray(cache[f"{prefix}_ref_r_perp"], dtype=float).item()
+            ),
+            corrs=[() for _ in range(len(bins) + 1)],
+        )
+
+    def _add_rebinned_jackknife(
+        self,
+        color: str,
+        bins: list[_RadialBin],
+        cache: Mapping[str, np.ndarray],
+        result: dict[str, np.ndarray],
+    ) -> None:
+        samples_key = f"{color}_basis_jackknife_samples"
+        if samples_key not in cache:
+            return
+
+        basis_samples = np.asarray(cache[samples_key], dtype=float)
+        if basis_samples.ndim != 2:
+            return
+        basis_err = np.asarray(cache[f"{color}_basis_analytic_err"], dtype=float)
+        basis_weight = np.zeros_like(basis_err, dtype=float)
+        good_err = np.isfinite(basis_err) & (basis_err > 0)
+        basis_weight[good_err] = 1.0 / basis_err[good_err] ** 2
+
+        groups = self._basis_bin_groups(bins, cache)
+        samples = np.full((basis_samples.shape[0], len(groups)), np.nan, dtype=float)
+        for i, use in enumerate(groups):
+            good = use & (basis_weight > 0) & np.all(np.isfinite(basis_samples), axis=0)
+            weight_sum = np.sum(basis_weight[good])
+            if weight_sum > 0:
+                samples[:, i] = basis_samples[:, good].dot(basis_weight[good])
+                samples[:, i] /= weight_sum
+
+        mean = np.nanmean(samples, axis=0)
+        centered = samples - mean
+        covariance = (1.0 - 1.0 / samples.shape[0]) * centered.conj().T.dot(centered)
+        covariance = np.real_if_close(covariance)
+        err = np.sqrt(np.clip(np.diag(covariance), 0, None))
+
+        result[f"{color}_err"] = err
+        result[f"{color}_cov"] = covariance
+        result[f"{color}_jackknife_avg"] = mean
+        result[f"{color}_jackknife_err"] = err
+        result[f"{color}_jackknife_samples"] = samples
+
+    def _rebinned_diagnostic_arrays(
+        self,
+        bins: list[_RadialBin],
+        cache: Mapping[str, np.ndarray],
+    ) -> dict[str, np.ndarray]:
+        if "diagnostic_radial_bin_edges" not in cache:
+            return {}
+
+        groups = self._basis_bin_groups(bins, cache)
+        result: dict[str, np.ndarray] = {
+            "diagnostic_radial_bin_edges": self._radial_edges_from_bins(bins),
+            "diagnostic_radial_bin_centers": self._bin_centers(bins),
+        }
+        for key, value in cache.items():
+            if key in result or key.startswith("basis_"):
+                continue
+            if key in {"diagnostic_radial_bin_edges", "diagnostic_radial_bin_centers"}:
+                continue
+            array = np.asarray(value)
+            if key.endswith("_counts") and array.ndim == 2:
+                rebinned = np.zeros((len(groups), array.shape[1]), dtype=float)
+                for i, use in enumerate(groups):
+                    if np.any(use):
+                        rebinned[i] = np.sum(array[use], axis=0)
+                result[key] = rebinned
+            elif key.endswith("_bin_edges"):
+                result[key] = array
+        return result
+
+    def _load_basis_cache(self, mode: ColorMode) -> dict[str, np.ndarray] | None:
+        path = self._basis_cache_file(mode)
+        if not path.exists():
+            return None
+        with np.load(path, allow_pickle=False) as data:
+            cache = {key: data[key] for key in data.files}
+        if not self._valid_basis_cache(mode, cache):
+            return None
+        return cache
+
+    def _valid_basis_cache(
+        self,
+        mode: ColorMode,
+        cache: Mapping[str, np.ndarray],
+    ) -> bool:
+        if "basis_edges" not in cache or "basis_cache_hash" not in cache:
+            return False
+        basis_edges = self._radial_basis_edges()
+        cached_edges = np.asarray(cache["basis_edges"], dtype=float)
+        if cached_edges.shape != basis_edges.shape or not np.allclose(
+            cached_edges,
+            basis_edges,
+            rtol=0.0,
+            atol=1.0e-12,
+        ):
+            return False
+        expected_hash = self._basis_cache_hash(mode, basis_edges)
+        cached_hash = np.asarray(cache["basis_cache_hash"]).item()
+        return str(cached_hash) == expected_hash
+
+    def _basis_cache_file(self, mode: ColorMode) -> Path:
+        config = self._radial_rebinning_config()
+        cache_name = str(config.get("cache_name", "radial_basis"))
+        return self.out_dir / f"stack_{mode}_{cache_name}.npz"
+
+    def _basis_cache_hash(self, mode: ColorMode, basis_edges: np.ndarray) -> str:
+        blocked = {
+            "foreground",
+            "background",
+            "footprint",
+            "out_dir",
+            "config",
+            "r_bin_edges",
+            "radial_rebinning",
+        }
+        effective = {
+            field.name: getattr(self, field.name)
+            for field in dataclass_fields(self)
+            if field.init and field.name not in blocked
+        }
+        effective["mode"] = mode
+        effective["basis_edges"] = basis_edges
+        effective["cache_version"] = 1
+        return stable_hash(self._to_builtin(effective))
+
+    def _radial_rebinning_enabled(self) -> bool:
+        return bool(self._radial_rebinning_config().get("enabled", False))
+
+    def _radial_rebinning_config(self) -> dict[str, Any]:
+        raw = self.radial_rebinning
+        if raw is None:
+            return {"enabled": False}
+        if isinstance(raw, bool):
+            return {"enabled": raw}
+        if not isinstance(raw, Mapping):
+            raise ValueError("radial_rebinning must be a mapping or boolean")
+        config = dict(raw)
+        config["enabled"] = bool(config.get("enabled", True))
+        return config
+
+    def _radial_basis_edges(self) -> np.ndarray:
+        config = self._radial_rebinning_config()
+        raw_edges = config.get("basis_edges", config.get("edges"))
+        if raw_edges is not None:
+            if isinstance(raw_edges, np.ndarray):
+                edges = np.asarray(raw_edges, dtype=float)
+            else:
+                edges = np.asarray(parse_array_spec(raw_edges), dtype=float)
+        else:
+            n_bins = int(config.get("basis_n_bins", config.get("n_bins", 64)))
+            if n_bins < 1:
+                raise ValueError("radial_rebinning.basis_n_bins must be positive")
+            target_edges = np.asarray(self.r_bin_edges, dtype=float)
+            edges = np.geomspace(target_edges[0], target_edges[-1], n_bins + 1)
+        self._validate_radial_edges(edges, "radial_rebinning basis edges")
+        return edges
+
+    def _basis_bin_groups(
+        self,
+        bins: list[_RadialBin],
+        cache: Mapping[str, np.ndarray],
+    ) -> list[np.ndarray]:
+        basis_edges = np.asarray(cache["basis_edges"], dtype=float)
+        basis_centers = np.sqrt(basis_edges[:-1] * basis_edges[1:])
+        policy = str(
+            self._radial_rebinning_config().get("edge_assignment", "center")
+        ).lower()
+        groups: list[np.ndarray] = []
+        for i, radial_bin in enumerate(bins):
+            if policy == "strict":
+                use = (basis_edges[:-1] >= radial_bin.lo) & (
+                    basis_edges[1:] <= radial_bin.hi
+                )
+            elif policy == "center":
+                right = basis_centers < radial_bin.hi
+                if i == len(bins) - 1:
+                    right |= np.isclose(basis_centers, radial_bin.hi)
+                use = (basis_centers >= radial_bin.lo) & right
+            else:
+                raise ValueError(
+                    "radial_rebinning.edge_assignment must be 'center' or 'strict'"
+                )
+            groups.append(use)
+        return groups
+
+    def _rebin_weighted(
+        self,
+        value: np.ndarray,
+        weight: np.ndarray,
+        groups: list[np.ndarray],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        out = np.full(len(groups), np.nan, dtype=float)
+        out_weight = np.zeros(len(groups), dtype=float)
+        for i, use in enumerate(groups):
+            good = use & np.isfinite(value) & np.isfinite(weight) & (weight > 0)
+            if np.any(good):
+                out_weight[i] = np.sum(weight[good])
+                out[i] = np.sum(value[good] * weight[good]) / out_weight[i]
+        return out, out_weight
+
+    def _rebin_sum(self, value: np.ndarray, groups: list[np.ndarray]) -> np.ndarray:
+        out = np.zeros(len(groups), dtype=float)
+        for i, use in enumerate(groups):
+            good = use & np.isfinite(value)
+            if np.any(good):
+                out[i] = np.sum(value[good])
+        return out
+
     def _observable(
         self, catalog: pd.DataFrame, color: str, mode: ColorMode
     ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -911,7 +1371,13 @@ class TreeCorrStacker:
         )
         rows = np.array(
             [
-                (result.raw, result.raw_err, result.weight, result.npairs)
+                (
+                    result.raw,
+                    result.raw_err,
+                    result.weight,
+                    result.npairs,
+                    result.r_perp,
+                )
                 for result in bin_results
             ]
         )
@@ -928,11 +1394,13 @@ class TreeCorrStacker:
             color_err=color_err,
             weight=rows[:-1, 2],
             npairs=rows[:-1, 3],
+            r_perp=rows[:-1, 4],
             ref_raw=float(rows[-1, 0]),
             ref_raw_err=float(rows[-1, 1]),
             ref_color=float(ref_color[0]),
             ref_color_err=float(ref_color_err[0]),
             ref_npairs=float(rows[-1, 3]),
+            ref_r_perp=float(rows[-1, 4]),
             corrs=[result.corrs for result in bin_results],
         )
 
@@ -951,12 +1419,12 @@ class TreeCorrStacker:
                 for b in bins
             ]
         if not np.any(good):
-            return [_BinResult(np.nan, np.nan, 0.0, 0.0, ()) for _ in bins]
+            return [_BinResult(np.nan, np.nan, 0.0, 0.0, np.nan, ()) for _ in bins]
 
-        mean, count_weight, npairs, _ = self._pair_means(
+        mean, count_weight, npairs, _, _ = self._pair_means(
             value, good, bins, direction, random=random
         )
-        mean2, _, _, _ = self._pair_means(
+        mean2, _, _, _, _ = self._pair_means(
             value**2, good, bins, direction, random=random
         )
 
@@ -967,18 +1435,20 @@ class TreeCorrStacker:
                 or not np.isfinite(mean[i])
                 or not np.isfinite(mean2[i])
             ):
-                results.append(_BinResult(np.nan, np.nan, 0.0, npairs[i], ()))
+                results.append(_BinResult(np.nan, np.nan, 0.0, npairs[i], np.nan, ()))
                 continue
 
             variance_floor = max(mean2[i] - mean[i] ** 2, 0.0)
             weight = np.zeros_like(err)
             weight[good] = 1.0 / (err[good] ** 2 + variance_floor)
 
-            avg, weight_sum, weighted_npairs, corrs = self._pair_mean(
+            avg, weight_sum, weighted_npairs, r_perp, corrs = self._pair_mean(
                 value, good, radial_bin, direction, weight, random=random
             )
             avg_err = np.sqrt(1.0 / weight_sum) if weight_sum > 0 else np.nan
-            results.append(_BinResult(avg, avg_err, weight_sum, weighted_npairs, corrs))
+            results.append(
+                _BinResult(avg, avg_err, weight_sum, weighted_npairs, r_perp, corrs)
+            )
         return results
 
     def _stack_bin(
@@ -990,24 +1460,24 @@ class TreeCorrStacker:
         direction: StackDirection,
         random: bool = False,
     ) -> _BinResult:
-        mean, count_weight, npairs, _ = self._pair_mean(
+        mean, count_weight, npairs, _, _ = self._pair_mean(
             value, good, radial_bin, direction, random=random
         )
-        mean2, _, _, _ = self._pair_mean(
+        mean2, _, _, _, _ = self._pair_mean(
             value**2, good, radial_bin, direction, random=random
         )
         if count_weight == 0 or not np.isfinite(mean) or not np.isfinite(mean2):
-            return _BinResult(np.nan, np.nan, 0.0, npairs, ())
+            return _BinResult(np.nan, np.nan, 0.0, npairs, np.nan, ())
 
         variance_floor = max(mean2 - mean**2, 0.0)
         weight = np.zeros_like(err)
         weight[good] = 1.0 / (err[good] ** 2 + variance_floor)
 
-        avg, weight_sum, npairs, corrs = self._pair_mean(
+        avg, weight_sum, npairs, r_perp, corrs = self._pair_mean(
             value, good, radial_bin, direction, weight, random=random
         )
         avg_err = np.sqrt(1.0 / weight_sum) if weight_sum > 0 else np.nan
-        return _BinResult(avg, avg_err, weight_sum, npairs, corrs)
+        return _BinResult(avg, avg_err, weight_sum, npairs, r_perp, corrs)
 
     def _pair_mean(
         self,
@@ -1017,9 +1487,9 @@ class TreeCorrStacker:
         direction: StackDirection,
         weight: np.ndarray | None = None,
         random: bool = False,
-    ) -> tuple[float, float, float, tuple[Any, ...]]:
+    ) -> tuple[float, float, float, float, tuple[Any, ...]]:
         if not np.any(good):
-            return np.nan, 0.0, 0.0, ()
+            return np.nan, 0.0, 0.0, np.nan, ()
 
         if direction == "forward":
             source = self._background_catalog(
@@ -1040,6 +1510,7 @@ class TreeCorrStacker:
                 self._safe_mean(corr.xi[0], corr.weight[0]),
                 corr.weight[0],
                 corr.npairs[0],
+                self._safe_mean(corr.meanr[0], corr.weight[0]),
                 (corr,),
             )
 
@@ -1056,7 +1527,7 @@ class TreeCorrStacker:
             num_threads=self.num_threads,
         )
         if denominator.weight[0] == 0:
-            return np.nan, 0.0, denominator.npairs[0], ()
+            return np.nan, 0.0, denominator.npairs[0], np.nan, ()
 
         numerator = self._nn(radial_bin)
         numerator.process(
@@ -1073,6 +1544,7 @@ class TreeCorrStacker:
             numerator.weight[0] / denominator.weight[0],
             denominator.weight[0],
             denominator.npairs[0],
+            self._safe_mean(denominator.meanr[0], denominator.weight[0]),
             (numerator, denominator),
         )
 
@@ -1084,16 +1556,17 @@ class TreeCorrStacker:
         direction: StackDirection,
         weight: np.ndarray | None = None,
         random: bool = False,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, tuple[Any, ...]]:
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, tuple[Any, ...]]:
         if not radial_bins:
             empty = np.array([], dtype=float)
-            return empty, empty, empty, ()
+            return empty, empty, empty, empty, ()
         if not np.any(good):
             n_bins = len(radial_bins)
             return (
                 np.full(n_bins, np.nan, dtype=float),
                 np.zeros(n_bins, dtype=float),
                 np.zeros(n_bins, dtype=float),
+                np.full(n_bins, np.nan, dtype=float),
                 (),
             )
 
@@ -1116,6 +1589,7 @@ class TreeCorrStacker:
                 self._safe_means(corr.xi, corr.weight),
                 corr.weight,
                 corr.npairs,
+                self._safe_means(corr.meanr, corr.weight),
                 (corr,),
             )
 
@@ -1150,6 +1624,7 @@ class TreeCorrStacker:
             mean,
             denominator.weight,
             denominator.npairs,
+            self._safe_means(denominator.meanr, denominator.weight),
             (numerator, denominator),
         )
 
@@ -1280,8 +1755,20 @@ class TreeCorrStacker:
         random_flipped: _Profile | None = None,
     ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
         use_flipped = self.flipped_correction
+        n_bins = len(bins)
+
+        def profile_r_perp(profile: _Profile) -> np.ndarray:
+            return np.asarray(
+                getattr(profile, "r_perp", np.full(n_bins, np.nan)),
+                dtype=float,
+            )
+
+        def profile_ref_r_perp(profile: _Profile) -> np.ndarray:
+            return np.array(getattr(profile, "ref_r_perp", np.nan))
+
         result = {
             f"{color}_bin_centers": self._bin_centers(bins),
+            f"{color}_r_perp_avg": profile_r_perp(forward),
             f"{color}_avg": estimate.signal,
             f"{color}_err": estimate.signal_err,
             f"{color}_cov": estimate.covariance,
@@ -1304,9 +1791,11 @@ class TreeCorrStacker:
             f"{color}_forward_raw_avg": forward.raw,
             f"{color}_forward_raw_err": forward.raw_err,
             f"{color}_forward_npairs": forward.npairs,
+            f"{color}_forward_r_perp_avg": profile_r_perp(forward),
             f"{color}_forward_ref_raw_avg": np.array(forward.ref_raw),
             f"{color}_forward_ref_raw_err": np.array(forward.ref_raw_err),
             f"{color}_forward_ref_npairs": np.array(forward.ref_npairs),
+            f"{color}_forward_ref_r_perp_avg": profile_ref_r_perp(forward),
         }
         if use_flipped:
             result.update(
@@ -1322,9 +1811,11 @@ class TreeCorrStacker:
                     f"{color}_flipped_raw_avg": flipped.raw,
                     f"{color}_flipped_raw_err": flipped.raw_err,
                     f"{color}_flipped_npairs": flipped.npairs,
+                    f"{color}_flipped_r_perp_avg": profile_r_perp(flipped),
                     f"{color}_flipped_ref_raw_avg": np.array(flipped.ref_raw),
                     f"{color}_flipped_ref_raw_err": np.array(flipped.ref_raw_err),
                     f"{color}_flipped_ref_npairs": np.array(flipped.ref_npairs),
+                    f"{color}_flipped_ref_r_perp_avg": profile_ref_r_perp(flipped),
                 }
             )
         if estimate.random_delta is not None:
@@ -1349,6 +1840,9 @@ class TreeCorrStacker:
                     f"{color}_random_forward_raw_avg": random_forward.raw,
                     f"{color}_random_forward_raw_err": random_forward.raw_err,
                     f"{color}_random_forward_npairs": random_forward.npairs,
+                    f"{color}_random_forward_r_perp_avg": profile_r_perp(
+                        random_forward
+                    ),
                     f"{color}_random_forward_ref_raw_avg": np.array(
                         random_forward.ref_raw
                     ),
@@ -1357,6 +1851,9 @@ class TreeCorrStacker:
                     ),
                     f"{color}_random_forward_ref_npairs": np.array(
                         random_forward.ref_npairs
+                    ),
+                    f"{color}_random_forward_ref_r_perp_avg": profile_ref_r_perp(
+                        random_forward
                     ),
                 }
             )
@@ -1378,6 +1875,9 @@ class TreeCorrStacker:
                         f"{color}_random_flipped_raw_avg": random_flipped.raw,
                         f"{color}_random_flipped_raw_err": random_flipped.raw_err,
                         f"{color}_random_flipped_npairs": random_flipped.npairs,
+                        f"{color}_random_flipped_r_perp_avg": profile_r_perp(
+                            random_flipped
+                        ),
                         f"{color}_random_flipped_ref_raw_avg": np.array(
                             random_flipped.ref_raw
                         ),
@@ -1386,6 +1886,9 @@ class TreeCorrStacker:
                         ),
                         f"{color}_random_flipped_ref_npairs": np.array(
                             random_flipped.ref_npairs
+                        ),
+                        f"{color}_random_flipped_ref_r_perp_avg": profile_ref_r_perp(
+                            random_flipped
                         ),
                     }
                 )
@@ -1534,7 +2037,7 @@ class TreeCorrStacker:
 
         from scipy.spatial import cKDTree
 
-        radial_edges = np.asarray(self.r_bin_edges, dtype=float)
+        radial_edges = self._radial_edges_from_bins(bins)
         fg_vectors = self._unit_vectors(self.foreground)
         bg_vectors = self._unit_vectors(self.background)
         background_tree = cKDTree(bg_vectors)
@@ -1798,14 +2301,27 @@ class TreeCorrStacker:
 
     def _radial_bins(self) -> list[_RadialBin]:
         edges = np.asarray(self.r_bin_edges, dtype=float)
-        if edges.ndim != 1 or len(edges) < 2:
-            raise ValueError("r_bin_edges must contain at least two edges")
-        if np.any(edges <= 0) or np.any(np.diff(edges) <= 0):
-            raise ValueError("r_bin_edges must be positive and increasing")
+        self._validate_radial_edges(edges, "r_bin_edges")
+        return self._radial_bins_from_edges(edges)
+
+    def _radial_bins_from_edges(self, edges: np.ndarray) -> list[_RadialBin]:
+        edges = np.asarray(edges, dtype=float)
+        self._validate_radial_edges(edges, "radial bin edges")
         return [
             _RadialBin(float(lo), float(hi), float(np.sqrt(lo * hi)))
             for lo, hi in zip(edges[:-1], edges[1:])
         ]
+
+    def _validate_radial_edges(self, edges: np.ndarray, label: str) -> None:
+        if edges.ndim != 1 or len(edges) < 2:
+            raise ValueError(f"{label} must contain at least two edges")
+        if np.any(edges <= 0) or np.any(np.diff(edges) <= 0):
+            raise ValueError(f"{label} must be positive and increasing")
+
+    def _radial_edges_from_bins(self, bins: list[_RadialBin]) -> np.ndarray:
+        if not bins:
+            return np.array([], dtype=float)
+        return np.array([bins[0].lo] + [radial_bin.hi for radial_bin in bins])
 
     def _reference_bin(self) -> _RadialBin:
         lo, hi = self.reference_annulus
