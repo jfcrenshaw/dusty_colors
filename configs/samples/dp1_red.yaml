@@ -1,5 +1,5 @@
 id: dp1_red
-catalog: configs/catalogs/rubin_dp1.yaml
+catalog: configs/catalogs/rubin_dp1_pai24.yaml
 selection:
   foreground_z: [0.2, 0.5]
   background_z: [0.7, 1.4]
