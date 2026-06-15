@@ -19,6 +19,8 @@ from dusty_colors.color_split_bias import (
     attach_color_split_columns,
     contamination_summary_text,
     fcolor_stack,
+    flipped_corrected_fcolor_stack,
+    proxy_definitions,
     proxy_contamination_summary_table,
     summarize_inner_bin_exclusion_rerun,
     summarize_inner_bin_pair_influence,
@@ -166,9 +168,37 @@ class ColorSplitBiasTest(unittest.TestCase):
             overlap_bands=("r",),
         )
 
+        self.assertAlmostEqual(out.loc[0, "log10_foreground_g_flux"], 0.0)
+        self.assertAlmostEqual(out.loc[0, "log10_foreground_z_flux"], 1.0)
+        self.assertAlmostEqual(out.loc[0, "log10_background_g_flux"], 1.0)
+        self.assertAlmostEqual(out.loc[0, "log10_background_z_flux"], np.log10(5.0))
+        self.assertAlmostEqual(out.loc[0, "foreground_flux_ratio_g_z"], 0.1)
         self.assertAlmostEqual(out.loc[0, "foreground_background_z_flux_ratio"], 2.0)
         self.assertAlmostEqual(out.loc[0, "max_deblend_fluxOverlapFraction"], 0.7)
         self.assertTrue(bool(out.loc[0, "valid_background_stack_color"]))
+        self.assertTrue(bool(out.loc[0, "valid_flipped_corrected_stack_color"]))
+
+    def test_proxy_definitions_use_background_brightness_not_brightness_ratio(
+        self,
+    ) -> None:
+        definitions = proxy_definitions("g-z")
+        by_proxy = {definition["proxy"]: definition for definition in definitions}
+
+        self.assertIn("background_g_brightness", by_proxy)
+        self.assertIn("background_z_brightness", by_proxy)
+        self.assertNotIn("foreground_g_brightness", by_proxy)
+        self.assertNotIn("foreground_z_brightness", by_proxy)
+        self.assertNotIn("z_brightness_ratio", by_proxy)
+        self.assertEqual(
+            by_proxy["background_g_brightness"]["metric_col"],
+            "log10_background_g_flux",
+        )
+        self.assertEqual(
+            by_proxy["background_z_brightness"]["metric_col"],
+            "log10_background_z_flux",
+        )
+        self.assertTrue(by_proxy["background_g_brightness"]["expected_positive_delta"])
+        self.assertFalse(by_proxy["background_z_brightness"]["expected_positive_delta"])
 
     def test_analyze_proxy_split_bin_reports_high_minus_low_summary(self) -> None:
         pairs = pd.DataFrame(
@@ -182,7 +212,7 @@ class ColorSplitBiasTest(unittest.TestCase):
         )
         foreground = pd.DataFrame(
             {
-                "flux_g": [1.0, 1.0, 10.0, 10.0],
+                "flux_g": [10.0, 10.0, 10.0, 10.0],
                 "flux_z": [10.0, 10.0, 10.0, 10.0],
                 "fluxerr_g": [0.1] * 4,
                 "fluxerr_z": [0.1] * 4,
@@ -227,6 +257,12 @@ class ColorSplitBiasTest(unittest.TestCase):
         self.assertEqual(result["summary"]["n_high"], 2)
         self.assertEqual(result["summary"]["n_low"], 2)
         self.assertGreater(result["summary"]["delta_high_minus_low_gz_mag"], 0)
+        self.assertEqual(
+            result["summary"]["estimator"],
+            "forward_minus_flipped_no_random_no_reference",
+        )
+        self.assertIn("forward_gz_color", result["stack_table"].columns)
+        self.assertIn("flipped_gz_color", result["stack_table"].columns)
 
         comparison = pd.DataFrame(
             [
@@ -236,6 +272,23 @@ class ColorSplitBiasTest(unittest.TestCase):
         )
         interp = proxy_contamination_summary_table(comparison)
         self.assertIn("Both bins show", interp.loc[0, "interpretation"])
+
+    def test_flipped_corrected_fcolor_stack_subtracts_foreground_color(self) -> None:
+        pairs = pd.DataFrame(
+            {
+                "background_flux_ratio_g_z": [0.1, 0.1],
+                "background_flux_ratio_g_z_err": [0.1, 0.1],
+                "foreground_flux_ratio_g_z": [1.0, 1.0],
+                "foreground_flux_ratio_g_z_err": [0.1, 0.1],
+            }
+        )
+
+        corrected = flipped_corrected_fcolor_stack(pairs)
+
+        self.assertEqual(corrected["n"], 2)
+        self.assertAlmostEqual(corrected["forward_gz_color"], 2.5)
+        self.assertAlmostEqual(corrected["flipped_gz_color"], 0.0)
+        self.assertAlmostEqual(corrected["gz_color"], 2.5)
 
     def test_proxy_signal_normalization_uses_corrected_stack_signal(self) -> None:
         summary = pd.DataFrame(

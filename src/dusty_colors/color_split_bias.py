@@ -8,7 +8,11 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from .observables import flux_ratio_observable, magnitude_color_observable
+from .observables import (
+    flux_ratio_observable,
+    magnitude_color_observable,
+    parse_color,
+)
 from .postage_stamps import build_projected_pair_table, pair_table_summary
 
 
@@ -111,7 +115,7 @@ def attach_pair_observables(
     color: str = "g-z",
     snr_max: float | None = 100.0,
 ) -> pd.DataFrame:
-    """Attach pair-level colors, flux ratios, and brightness ratios."""
+    """Attach pair-level colors, flux ratios, and brightness metrics."""
     if pairs.empty:
         return pairs.copy()
 
@@ -124,6 +128,7 @@ def attach_pair_observables(
     label = color.replace("-", "_")
     fg_color, fg_color_err = magnitude_color_observable(fg_rows, color, snr_max=snr_max)
     bg_color, bg_color_err = magnitude_color_observable(bg_rows, color, snr_max=snr_max)
+    fg_ratio, fg_ratio_err = flux_ratio_observable(fg_rows, color, snr_max=snr_max)
     bg_ratio, bg_ratio_err = flux_ratio_observable(bg_rows, color, snr_max=snr_max)
 
     out = pairs.copy()
@@ -134,22 +139,48 @@ def attach_pair_observables(
     out[f"foreground_minus_background_{label}"] = (
         out[f"foreground_{label}"] - out[f"background_{label}"]
     )
+    out[f"foreground_flux_ratio_{label}"] = fg_ratio
+    out[f"foreground_flux_ratio_{label}_err"] = fg_ratio_err
     out[f"background_flux_ratio_{label}"] = bg_ratio
     out[f"background_flux_ratio_{label}_err"] = bg_ratio_err
-    out["foreground_z_flux"] = fg_rows["flux_z"].to_numpy(float)
-    out["background_z_flux"] = bg_rows["flux_z"].to_numpy(float)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        out["foreground_background_z_flux_ratio"] = (
-            out["foreground_z_flux"] / out["background_z_flux"]
-        )
-        out["log10_foreground_background_z_flux_ratio"] = np.log10(
-            out["foreground_background_z_flux_ratio"]
-        )
+    band1, band2 = parse_color(color)
+    for band in (band1, band2):
+        flux_col = f"flux_{band}"
+        if flux_col in fg_rows:
+            out[f"foreground_{band}_flux"] = fg_rows[flux_col].to_numpy(float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                out[f"log10_foreground_{band}_flux"] = np.log10(
+                    out[f"foreground_{band}_flux"]
+                )
+        if flux_col in bg_rows:
+            out[f"background_{band}_flux"] = bg_rows[flux_col].to_numpy(float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                out[f"log10_background_{band}_flux"] = np.log10(
+                    out[f"background_{band}_flux"]
+                )
+
+    if "flux_z" in fg_rows and "flux_z" in bg_rows:
+        out["foreground_z_flux"] = fg_rows["flux_z"].to_numpy(float)
+        out["background_z_flux"] = bg_rows["flux_z"].to_numpy(float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            out["foreground_background_z_flux_ratio"] = (
+                out["foreground_z_flux"] / out["background_z_flux"]
+            )
+            out["log10_foreground_background_z_flux_ratio"] = np.log10(
+                out["foreground_background_z_flux_ratio"]
+            )
     out["valid_background_stack_color"] = (
         np.isfinite(out[f"background_flux_ratio_{label}"])
         & np.isfinite(out[f"background_flux_ratio_{label}_err"])
         & (out[f"background_flux_ratio_{label}"] > 0)
         & (out[f"background_flux_ratio_{label}_err"] > 0)
+    )
+    out["valid_flipped_corrected_stack_color"] = (
+        out["valid_background_stack_color"]
+        & np.isfinite(out[f"foreground_flux_ratio_{label}"])
+        & np.isfinite(out[f"foreground_flux_ratio_{label}_err"])
+        & (out[f"foreground_flux_ratio_{label}"] > 0)
+        & (out[f"foreground_flux_ratio_{label}_err"] > 0)
     )
     return out
 
@@ -230,6 +261,7 @@ def attach_independent_proxy_columns(
 
 def proxy_definitions(color: str = "g-z") -> list[dict[str, Any]]:
     """Return the independent contamination proxies evaluated by the notebook."""
+    band1, band2 = parse_color(color)
     label = color.replace("-", "_")
     return [
         {
@@ -245,15 +277,31 @@ def proxy_definitions(color: str = "g-z") -> list[dict[str, Any]]:
             "requires_metadata": True,
         },
         {
-            "proxy": "z_brightness_ratio",
-            "metric_col": "log10_foreground_background_z_flux_ratio",
-            "high_label": "fg_bright_in_z",
-            "low_label": "fg_faint_in_z",
+            "proxy": f"background_{band1}_brightness",
+            "metric_col": f"log10_background_{band1}_flux",
+            "high_label": f"bg_bright_in_{band1}",
+            "low_label": f"bg_faint_in_{band1}",
             "description": (
-                "Foreground/background z-band flux ratio: high values mean the "
-                "foreground has more z-band light available to leak into the background."
+                f"Background {band1}-band flux only: high values mean the "
+                f"background is brighter in the blue band. For a color defined "
+                "as blue-red, blue foreground leakage should have a smaller "
+                "fractional effect on high-background-flux objects."
             ),
             "expected_positive_delta": True,
+            "requires_metadata": False,
+        },
+        {
+            "proxy": f"background_{band2}_brightness",
+            "metric_col": f"log10_background_{band2}_flux",
+            "high_label": f"bg_bright_in_{band2}",
+            "low_label": f"bg_faint_in_{band2}",
+            "description": (
+                f"Background {band2}-band flux only: high values mean the "
+                f"background is brighter in the red band. For a color defined "
+                "as blue-red, red foreground leakage should have a smaller "
+                "fractional effect on high-background-flux objects."
+            ),
+            "expected_positive_delta": False,
             "requires_metadata": False,
         },
         {
@@ -283,7 +331,11 @@ def attach_proxy_groups(
     """Split valid pairs into high/low groups by a proxy metric quantile."""
     out = pairs.copy()
     values = pd.to_numeric(out.get(metric_col, np.nan), errors="coerce")
-    valid = np.isfinite(values) & out.get("valid_background_stack_color", False)
+    stack_valid = out.get(
+        "valid_flipped_corrected_stack_color",
+        out.get("valid_background_stack_color", False),
+    )
+    valid = np.isfinite(values) & stack_valid
     if not np.any(valid):
         out[group_col] = INVALID_GROUP
         return out, np.nan
@@ -330,6 +382,73 @@ def fcolor_stack(values: Sequence[float], errors: Sequence[float]) -> dict[str, 
     }
 
 
+def flipped_corrected_fcolor_stack(
+    split_pairs: pd.DataFrame,
+    *,
+    color: str = "g-z",
+) -> dict[str, float]:
+    """Compute a no-random/no-reference forward-minus-flipped pair stack."""
+    label = color.replace("-", "_")
+    required = [
+        f"background_flux_ratio_{label}",
+        f"background_flux_ratio_{label}_err",
+        f"foreground_flux_ratio_{label}",
+        f"foreground_flux_ratio_{label}_err",
+    ]
+    if not set(required).issubset(split_pairs.columns):
+        return {
+            "n": 0,
+            "gz_color": np.nan,
+            "gz_color_err": np.nan,
+            "forward_gz_color": np.nan,
+            "forward_gz_color_err": np.nan,
+            "flipped_gz_color": np.nan,
+            "flipped_gz_color_err": np.nan,
+            "forward_raw_ratio": np.nan,
+            "flipped_raw_ratio": np.nan,
+        }
+
+    values = split_pairs.loc[:, required].apply(pd.to_numeric, errors="coerce")
+    good = (
+        np.isfinite(values[required[0]])
+        & np.isfinite(values[required[1]])
+        & np.isfinite(values[required[2]])
+        & np.isfinite(values[required[3]])
+        & (values[required[0]] > 0)
+        & (values[required[1]] > 0)
+        & (values[required[2]] > 0)
+        & (values[required[3]] > 0)
+    )
+    if not np.any(good):
+        return {
+            "n": 0,
+            "gz_color": np.nan,
+            "gz_color_err": np.nan,
+            "forward_gz_color": np.nan,
+            "forward_gz_color_err": np.nan,
+            "flipped_gz_color": np.nan,
+            "flipped_gz_color_err": np.nan,
+            "forward_raw_ratio": np.nan,
+            "flipped_raw_ratio": np.nan,
+        }
+
+    forward = fcolor_stack(values.loc[good, required[0]], values.loc[good, required[1]])
+    flipped = fcolor_stack(values.loc[good, required[2]], values.loc[good, required[3]])
+    corrected = forward["gz_color"] - flipped["gz_color"]
+    corrected_err = np.hypot(forward["gz_color_err"], flipped["gz_color_err"])
+    return {
+        "n": int(np.sum(good)),
+        "gz_color": float(corrected),
+        "gz_color_err": float(corrected_err),
+        "forward_gz_color": forward["gz_color"],
+        "forward_gz_color_err": forward["gz_color_err"],
+        "flipped_gz_color": flipped["gz_color"],
+        "flipped_gz_color_err": flipped["gz_color_err"],
+        "forward_raw_ratio": forward["raw_ratio"],
+        "flipped_raw_ratio": flipped["raw_ratio"],
+    }
+
+
 def stack_for_group(
     split_pairs: pd.DataFrame,
     group: str,
@@ -354,13 +473,9 @@ def stack_for_proxy_group(
     group: str,
     color: str = "g-z",
 ) -> dict[str, Any]:
-    """Compute a one-bin fcolors stack for one proxy-defined group."""
-    label = color.replace("-", "_")
+    """Compute a flipped-corrected one-bin fcolors stack for one proxy group."""
     use = split_pairs[group_col].eq(group)
-    result = fcolor_stack(
-        split_pairs.loc[use, f"background_flux_ratio_{label}"],
-        split_pairs.loc[use, f"background_flux_ratio_{label}_err"],
-    )
+    result = flipped_corrected_fcolor_stack(split_pairs.loc[use], color=color)
     result["group"] = group
     return result
 
@@ -433,20 +548,19 @@ def bootstrap_proxy_group_color(
     n_samples: int = 5000,
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
-    """Bootstrap proxy group mini-stack colors by resampling pairs."""
+    """Bootstrap proxy group flipped-corrected colors by resampling pairs."""
     rng = np.random.default_rng() if rng is None else rng
-    label = color.replace("-", "_")
-    columns = [f"background_flux_ratio_{label}", f"background_flux_ratio_{label}_err"]
-    sub = split_pairs.loc[split_pairs[group_col].eq(group), columns].dropna()
-    values = sub[columns[0]].to_numpy(float)
-    errors = sub[columns[1]].to_numpy(float)
-    if len(values) == 0:
+    sub = split_pairs.loc[split_pairs[group_col].eq(group)].copy()
+    if sub.empty:
         return np.full(n_samples, np.nan)
 
     out = np.empty(n_samples, dtype=float)
     for i in range(n_samples):
-        sample = rng.integers(0, len(values), len(values))
-        out[i] = fcolor_stack(values[sample], errors[sample])["gz_color"]
+        sample = rng.integers(0, len(sub), len(sub))
+        out[i] = flipped_corrected_fcolor_stack(
+            sub.iloc[sample],
+            color=color,
+        )["gz_color"]
     return out
 
 
@@ -460,7 +574,7 @@ def proxy_permutation_differences(
     n_samples: int = 5000,
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
-    """Permute proxy labels and recompute high minus low background color."""
+    """Permute proxy labels and recompute corrected high-minus-low color."""
     rng = np.random.default_rng() if rng is None else rng
     label = color.replace("-", "_")
     use = split_pairs[group_col].isin([high_label, low_label])
@@ -468,21 +582,25 @@ def proxy_permutation_differences(
         group_col,
         f"background_flux_ratio_{label}",
         f"background_flux_ratio_{label}_err",
+        f"foreground_flux_ratio_{label}",
+        f"foreground_flux_ratio_{label}_err",
     ]
     sub = split_pairs.loc[use, columns].copy()
-    values = sub[f"background_flux_ratio_{label}"].to_numpy(float)
-    errors = sub[f"background_flux_ratio_{label}_err"].to_numpy(float)
     labels = sub[group_col].to_numpy(str)
     n_high = int(np.sum(labels == high_label))
 
     out = np.empty(n_samples, dtype=float)
-    indices = np.arange(len(values))
+    indices = np.arange(len(sub))
     for i in range(n_samples):
         high_idx = rng.choice(indices, size=n_high, replace=False)
-        mask = np.zeros(len(values), dtype=bool)
+        mask = np.zeros(len(sub), dtype=bool)
         mask[high_idx] = True
-        high_color = fcolor_stack(values[mask], errors[mask])["gz_color"]
-        low_color = fcolor_stack(values[~mask], errors[~mask])["gz_color"]
+        high_color = flipped_corrected_fcolor_stack(sub.loc[mask], color=color)[
+            "gz_color"
+        ]
+        low_color = flipped_corrected_fcolor_stack(sub.loc[~mask], color=color)[
+            "gz_color"
+        ]
         out[i] = high_color - low_color
     return out
 
@@ -532,11 +650,7 @@ def analyze_proxy_split_bin(
         ),
     ]
     valid = split_pairs[group_col].isin([high_label, low_label])
-    label = color.replace("-", "_")
-    all_valid = fcolor_stack(
-        split_pairs.loc[valid, f"background_flux_ratio_{label}"],
-        split_pairs.loc[valid, f"background_flux_ratio_{label}_err"],
-    )
+    all_valid = flipped_corrected_fcolor_stack(split_pairs.loc[valid], color=color)
     all_valid["group"] = "all_valid_proxy_pairs"
     rows.append(all_valid)
     stack_table = pd.DataFrame(rows).set_index("group")
@@ -608,6 +722,7 @@ def analyze_proxy_split_bin(
         "r_min_kpc": r_min_kpc,
         "r_max_kpc": r_max_kpc,
         "proxy": proxy,
+        "estimator": "forward_minus_flipped_no_random_no_reference",
         "metric_col": metric_col,
         "high_label": high_label,
         "low_label": low_label,
@@ -1361,7 +1476,8 @@ def proxy_contamination_summary_table(proxy_summary: pd.DataFrame) -> pd.DataFra
         else:
             verdict = (
                 "Neither bin shows the contamination-expected sign; this argues "
-                "against this proxy indicating positive contamination in bin 1."
+                "against this proxy indicating contamination in the expected "
+                "direction in bin 1."
             )
 
         rows.append(
