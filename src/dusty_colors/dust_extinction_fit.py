@@ -780,11 +780,20 @@ def _clip_initial(value: float, lower: float, upper: float) -> float:
 
 
 def _dust_law(name: str, rv: float) -> Any:
-    module = import_module("dust_extinction.parameter_averages")
-    law_class = getattr(module, name, None)
-    if law_class is None:
-        raise ValueError(f"Unknown dust_extinction.parameter_averages law: {name}")
-    return law_class(Rv=float(rv))
+    for module_name in (
+        "dust_extinction.parameter_averages",
+        "dust_extinction.averages",
+    ):
+        module = import_module(module_name)
+        law_class = getattr(module, name, None)
+        if law_class is not None:
+            break
+    else:
+        raise ValueError(f"Unknown dust_extinction law: {name}")
+
+    if "Rv" in getattr(law_class, "param_names", ()):
+        return law_class(Rv=float(rv))
+    return law_class()
 
 
 __all__ = [

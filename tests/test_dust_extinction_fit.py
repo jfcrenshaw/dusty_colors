@@ -34,6 +34,7 @@ def _synthetic_stack_arrays(
     alpha: float = -0.75,
     rv: float = 3.4,
     foreground_redshift: float = 0.35,
+    law: str = "F99",
 ) -> dict[str, np.ndarray]:
     radius = np.geomspace(10.0, 900.0, 7)
     arrays: dict[str, np.ndarray] = {}
@@ -46,6 +47,7 @@ def _synthetic_stack_arrays(
             alpha=alpha,
             rv=rv,
             foreground_redshift=foreground_redshift,
+            law=law,
         )
         err = np.full_like(signal, 5.0e-4)
         arrays.update(
@@ -140,6 +142,32 @@ class DustExtinctionFitTest(unittest.TestCase):
         self.assertAlmostEqual(fit.rv, 3.1)
         self.assertAlmostEqual(fit.amplitude_av_mag, 0.025, delta=1.0e-4)
         self.assertAlmostEqual(fit.alpha, -0.75, delta=1.0e-3)
+
+    def test_fit_accepts_average_magellanic_cloud_laws(self) -> None:
+        foreground_redshift = 0.35
+
+        for law, rv in (("G03_LMCAvg", 3.41), ("G03_SMCBar", 2.74)):
+            results = StackResults(
+                stack_dir=Path("unused"),
+                mode="fcolors",
+                colors=("g-r", "r-i", "i-z"),
+                arrays=_synthetic_stack_arrays(
+                    rv=rv,
+                    foreground_redshift=foreground_redshift,
+                    law=law,
+                ),
+            )
+
+            fit = fit_dust_extinction_law(
+                results,
+                config=DustExtinctionFitConfig(law=law, fixed_rv=rv),
+                foreground_redshift=foreground_redshift,
+            )
+
+            self.assertEqual(fit.law, law)
+            self.assertTrue(fit.rv_fixed)
+            self.assertAlmostEqual(fit.amplitude_av_mag, 0.025, delta=1.0e-4)
+            self.assertAlmostEqual(fit.alpha, -0.75, delta=1.0e-3)
 
     def test_save_writes_text_report_when_required_colors_exist(self) -> None:
         with TemporaryDirectory() as tmp:
