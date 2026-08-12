@@ -17,16 +17,15 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from dusty_colors.plotting import (
-    StackResults,
+from dusty_colors.plotting import (  # noqa: E402
     default_style_path,
-    load_stack_results,
     plot_all_color_signals,
     plot_color_radial_distributions,
     plot_first_color_jackknife,
     plot_photoz_radial_distributions,
     save_stack_diagnostic_figures,
 )
+from dusty_colors.results import StackResults, load_stack_results  # noqa: E402
 
 
 def _write_yaml(path: Path, data: dict) -> None:

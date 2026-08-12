@@ -12,7 +12,7 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.stats import chi2 as chi2_distribution
 
-from .plotting import StackResults, load_stack_results
+from .results import StackResults, load_stack_source
 
 
 @dataclass(frozen=True)
@@ -55,7 +55,7 @@ def save_stack_color_power_law_fits(
     results = (
         source
         if isinstance(source, StackResults)
-        else _load_stack_source(source, mode=mode, root=root)
+        else load_stack_source(source, mode=mode, root=root)
     )
     pivot_kpc = float(config.get("radial_pivot_kpc", 100.0))
     colors = _configured_colors(config, results.colors)
@@ -203,18 +203,6 @@ def _configured_colors(
 
 def _has_color_profile(results: StackResults, color: str) -> bool:
     return f"{color}_bin_centers" in results.arrays and f"{color}_avg" in results.arrays
-
-
-def _load_stack_source(
-    source: str | Path,
-    *,
-    mode: str | None,
-    root: str | Path | None,
-) -> StackResults:
-    path = Path(source)
-    if path.is_dir():
-        return load_stack_results(stack_dir=path, mode=mode, root=root)
-    return load_stack_results(path, mode=mode, root=root)
 
 
 def _profile_errors(results: StackResults, color: str, size: int) -> np.ndarray:

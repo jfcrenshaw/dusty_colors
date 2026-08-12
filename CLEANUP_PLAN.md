@@ -169,7 +169,24 @@ This was a trap rather than harmless staleness: anyone reasoning about which fig
 Resolved by deleting the file.
 The manuscript now lives only with the submission, and the README figure table is the repository's answer to "which figures are current".
 
-### 10. Small duplication across modules
+### 10. Small duplication across modules — LARGELY RESOLVED 2026-08-12
+
+`StackResults`, `load_stack_results`, and their seven private loader helpers moved from `plotting.py` to a new `results.py`.
+Reading a finished stack no longer means importing a plotting module, and `plotting.py` dropped from 723 to 554 lines.
+
+The identical `_load_stack_source` in both fit modules became `results.load_stack_source`.
+
+Two things were left alone after checking them properly, correcting the original finding below:
+
+- `_profile_errors` is **not** byte-identical between the fit modules, as originally recorded.
+  `color_power_law_fit` returns raw errors and filters at the call site; `dust_extinction_fit` sanitises inside the helper because the values feed a covariance block before any filtering happens.
+  Both are correct, so they stay separate.
+- `_parameter_covariance` is genuinely identical but only three lines.
+  A shared module for it would cost more than the duplication does.
+
+Original finding follows.
+
+### 10b. Original finding
 
 `_load_stack_source` and `_profile_errors` are byte-identical in `color_power_law_fit.py` and `dust_extinction_fit.py`.
 `_parameter_covariance`, `_fit_bounds`, and `_initial_parameters` are near-identical.

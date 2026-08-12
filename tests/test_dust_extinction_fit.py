@@ -22,7 +22,7 @@ from dusty_colors.dust_extinction_fit import (  # noqa: E402
     fit_dust_extinction_law,
     save_stack_dust_extinction_fit,
 )
-from dusty_colors.plotting import StackResults  # noqa: E402
+from dusty_colors.results import StackResults  # noqa: E402
 
 
 HAS_DUST_EXTINCTION = find_spec("dust_extinction") is not None

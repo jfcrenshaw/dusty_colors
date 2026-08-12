@@ -80,7 +80,8 @@ Radial bins, color choices, sample cuts, and column mappings are never passed as
 | `treecorr_stacker.py` | The TreeCorr estimator. |
 | `randoms.py` | Random catalogs inside the footprint, and depth-matched weights for them. |
 | `diagnostics.py` | Pair-weighted histograms of background properties by separation. |
-| `plotting.py` | Stack result loading and figures. |
+| `results.py` | `StackResults` and the loaders that read a finished stack back off disk. |
+| `plotting.py` | Figures, built on `results.py`. |
 | `dust_extinction_fit.py` | Fit an extinction law to the measured color excess profiles. |
 | `color_power_law_fit.py` | Fit a power law to a single color profile. |
 | `analysis_stats.py` | Summary statistics for a completed analysis. |
@@ -118,6 +119,7 @@ Recorded honestly so they are not mistaken for intentional design.
 
 - `treecorr_stacker.py` is still a single 1,448-line class, now holding the estimator and its TreeCorr plumbing after random-catalog generation and diagnostics moved out.
   Its remaining bulk is the estimator itself, which is closer to an appropriate size; see `CLEANUP_PLAN.md`.
-- `StackResults` and the stack-file loaders live in `plotting.py`, which is why several fit-module helpers are duplicated.
+- Two 3-line helpers, `_parameter_covariance` and a `_profile_errors` variant, are still duplicated between the two fit modules.
+  They are small enough that a shared module would cost more than it saves.
 - Sample configs duplicate each other almost entirely, since there is no `extends:` mechanism yet.
 - `pipeline.py` dispatches stages by dynamic string import, which is more indirection than three fixed stages need.

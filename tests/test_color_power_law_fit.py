@@ -16,7 +16,7 @@ from dusty_colors.color_power_law_fit import (  # noqa: E402
     fit_color_power_law,
     save_stack_color_power_law_fits,
 )
-from dusty_colors.plotting import StackResults  # noqa: E402
+from dusty_colors.results import StackResults  # noqa: E402
 
 
 def _stack_arrays(

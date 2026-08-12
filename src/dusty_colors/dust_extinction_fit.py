@@ -14,7 +14,7 @@ from scipy.optimize import least_squares
 from scipy.stats import chi2 as chi2_distribution
 
 from .observables import parse_color
-from .plotting import StackResults, load_stack_results
+from .results import StackResults, load_stack_source
 
 DEFAULT_FIT_COLORS = ("g-r", "r-i", "i-z")
 COVARIANCE_MODES = (
@@ -169,7 +169,7 @@ def save_stack_dust_extinction_fit(
     results = (
         source
         if isinstance(source, StackResults)
-        else _load_stack_source(source, mode=mode, root=root)
+        else load_stack_source(source, mode=mode, root=root)
     )
     if not _has_required_colors(results, config.colors):
         return None
@@ -616,18 +616,6 @@ def _has_required_colors(results: StackResults, colors: Sequence[str]) -> bool:
         f"{color}_bin_centers" in results.arrays and f"{color}_avg" in results.arrays
         for color in colors
     )
-
-
-def _load_stack_source(
-    source: str | Path,
-    *,
-    mode: str | None,
-    root: str | Path | None,
-) -> StackResults:
-    path = Path(source)
-    if path.is_dir():
-        return load_stack_results(stack_dir=path, mode=mode, root=root)
-    return load_stack_results(path, mode=mode, root=root)
 
 
 def _inverse_micron_quantity(values: np.ndarray) -> Any:
