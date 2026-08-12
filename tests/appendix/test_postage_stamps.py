@@ -8,7 +8,7 @@ from astropy.cosmology import Planck18 as cosmo
 import numpy as np
 import pandas as pd
 
-from dusty_colors.postage_stamps import (
+from dusty_colors.appendix.postage_stamps import (
     ARCSEC_PER_RADIAN,
     build_object_metadata_query,
     build_projected_pair_table,

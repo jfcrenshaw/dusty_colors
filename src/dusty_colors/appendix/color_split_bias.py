@@ -8,7 +8,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from .observables import (
+from ..observables import (
     flux_ratio_observable,
     magnitude_color_observable,
     parse_color,

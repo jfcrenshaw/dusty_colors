@@ -1,3 +1,5 @@
 [flake8]
 max-line-length = 88
 extend-ignore = E203, E704
+# Appendix code is a lower maintenance tier; see appendix/README.md.
+exclude = .git,__pycache__,.venv,build,src/dusty_colors/appendix,appendix

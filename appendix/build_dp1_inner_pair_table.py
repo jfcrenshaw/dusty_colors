@@ -13,7 +13,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from dusty_colors.postage_stamps import (
+from dusty_colors.appendix.postage_stamps import (
     DEFAULT_EXPECTED_INNER_PAIR_COUNT,
     DEFAULT_INNER_R_MAX_KPC,
     DEFAULT_INNER_R_MIN_KPC,

@@ -1,38 +1,71 @@
 # dusty_colors
 
-Studying impact of foreground dust on background galaxy colors
+Measuring circumgalactic dust reddening by stacking background-galaxy colors around foreground galaxies.
+
+This is the analysis code for [Crenshaw, McQuinn & Werk (2026)](https://arxiv.org/abs/2606.24159), *A First Measurement of Circumgalactic Dust Reddening from Only 1.7 deg² of the Rubin Observatory's DP1*.
+
+The measurement works by stacking the colors of background galaxies as a function of projected separation from foreground galaxies.
+Dust in the foreground galaxies' circumgalactic medium reddens the background light, so the stacked color excess as a function of radius traces the projected dust profile.
+The estimator controls systematics by differencing a forward stack against a foreground-color-flipped stack, subtracting a random-position stack, and subtracting a large-radius reference annulus, with jackknife errors from angular sub-regions.
 
 ## Installation
 
-If running on the RSP, everything should already be installed.
-
-If running locally:
+The dependencies are declared in `pyproject.toml`.
+Install them into a conda environment, since `healpy`, `treecorr`, and `kcorrect` are much easier to obtain from conda-forge than from PyPI.
 
 ```bash
-conda env create -f environment.yml
+conda create -n dusty_colors python=3.13
 conda activate dusty_colors
+pip install -e ".[dev,notebooks,data]"
 python -m ipykernel install --user --name dusty_colors
 ```
 
-Note you can replace conda -> mamba if you are a mamba user.
+Replace `conda` with `mamba` if you prefer.
+The optional dependency groups are `dev` (formatting, linting, tests), `notebooks` (JupyterLab and plotting extras), and `data` (only needed for the download scripts in `scripts/`).
+
+Verify the install:
+
+```bash
+pytest
+```
 
 ## Running an analysis
 
-Analyses are YAML-first.
-Catalog preparation, sample selection, and TreeCorr stacking are described by
-config files under `configs/`.
-The default DP1 catalog uses the standard kcorrect template set;
-`configs/catalogs/dp1_pai_blanton2024.yaml` uses the expanded Pai & Blanton 2024
-template set.
+Analyses are described entirely by YAML.
+Nothing scientific is passed on the command line.
 
 ```bash
 python scripts/run_stack.py configs/analyses/dp1_default.yaml
-python scripts/run_stack.py configs/analyses/dp1_pai_blanton2024_default.yaml
 ```
 
-The runner skips stages whose outputs and manifests already match the resolved
-YAML graph.
-Use operational force flags to recompute stages:
+That single command runs three stages, in this order:
+
+```text
+  data/                                   raw DP1 tables
+    |
+    |   STAGE 1: CATALOG   <--- configs/catalogs/rubin_dp1.yaml
+    v
+  results/catalogs/rubin_dp1/
+      catalog.parquet, footprint.parquet
+    |
+    |   STAGE 2: SAMPLE    <--- configs/samples/dp1_default.yaml
+    v
+  results/samples/dp1_default/
+      foreground.parquet, background.parquet, sample_report.md
+    |
+    |   STAGE 3: STACK     <--- configs/analyses/dp1_default.yaml
+    v
+  results/stacks/dp1_default/
+      stack_fcolors.npz, config_resolved.yaml, figures
+```
+
+Note that you launch the pipeline by naming the **analysis** config, which belongs to the *last* stage.
+That is because the configs reference each other backwards: an analysis config names the sample config it needs, and a sample config names the catalog config it needs.
+The runner follows that chain of references down to the catalog, then executes forwards from the catalog back up to the stack.
+
+Each stage writes a `manifest.yaml` recording a hash of its resolved config and its inputs.
+A stage is skipped when its outputs already exist and its hash still matches, so rerunning an analysis that only changes stack settings will not rebuild the catalog.
+If outputs exist but the hash has changed, the runner stops and tells you which force flag to pass:
 
 ```bash
 python scripts/run_stack.py configs/analyses/dp1_default.yaml --force-stack
@@ -41,150 +74,95 @@ python scripts/run_stack.py configs/analyses/dp1_default.yaml --force-catalog
 python scripts/run_stack.py configs/analyses/dp1_default.yaml --force-all
 ```
 
-To rebuild the saved Pai & Blanton 2024 kcorrect model for the Rubin `griz`
-responses used by the DP1 configs:
+Forcing a stage also forces everything downstream of it.
+
+What each stage does:
+
+1. **Catalog** loads the raw tables, joins them, adapts survey-specific columns into one canonical schema, applies extinction corrections and physical-property enrichments, and writes `catalog.parquet` plus `footprint.parquet`.
+2. **Sample** reads that catalog, applies foreground and background cuts, optional cleaning, and jackknife region assignment, and writes `foreground.parquet` and `background.parquet` plus a human-readable `sample_report.md`.
+3. **Stack** reads those two samples, runs the TreeCorr estimator, and writes one `stack_<mode>.npz` per configured mode, alongside diagnostic arrays and standard figures.
+
+Every YAML key is documented in [docs/configuration.md](docs/configuration.md).
+The stage machinery is described in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Reproducing the paper figures
+
+The figures are produced by three notebooks, which between them need eleven analyses on disk.
+
+The main measurement, the red/blue split, and the catalog-properties figures:
 
 ```bash
-mamba run -n dusty_colors python scripts/build_kcorrect_broad.py --force
+python scripts/run_stack.py configs/analyses/dp1_default.yaml
+python scripts/run_stack.py configs/analyses/dp1_red.yaml
+python scripts/run_stack.py configs/analyses/dp1_blue.yaml
+python scripts/run_stack.py configs/analyses/dp1_default_pai24.yaml
 ```
 
-The script reads `data/kcorrect/templates_broad.fits`, uses the
-`data/bandpasses/rubin_bandpass_<band>_v1.9.1.dat` response files, and replaces
-`data/kcorrect/kcorrect_broad.fits` only when `--force` is supplied.
+The systematics variants, used only by the sensitivity figure:
 
-## YAML pipeline
+```bash
+for v in uniform_random no_random no_flip smaller_ap larger_ap smaller_dz larger_dz; do
+    python scripts/run_stack.py "configs/analyses/dp1_${v}.yaml"
+done
+```
 
-The config graph is:
+Then run these notebooks, which write into `figures/`:
+
+| Figure | Notebook | Reads |
+| --- | --- | --- |
+| `fig_photoz_distribution.pdf` | `plot_catalogs.ipynb` | sample `dp1_pai24` |
+| `fig_foreground_cmd.pdf` | `plot_catalogs.ipynb` | sample `dp1_pai24` |
+| `fig_foreground_properties.pdf` | `plot_catalogs.ipynb` | sample `dp1_pai24` |
+| `fig_result_compare.pdf` | `plot_main_results.ipynb` | stack `dp1_default` |
+| `fig_result_jackknife.pdf` | `plot_main_results.ipynb` | stack `dp1_default` |
+| `fig_result_colors.pdf` | `plot_main_results.ipynb` | stack `dp1_default` |
+| `fig_result_red_vs_blue.pdf` | `plot_main_results.ipynb` | stacks `dp1_red`, `dp1_blue` |
+| `fig_result_sensitivity.pdf` | `plot_main_results.ipynb` | the 7 systematics variants above |
+| `fig_chromaticity.pdf` | `plot_wavelength_dependence.ipynb` | stack `dp1_default` |
+| `fig_r_band_stamp_grid.pdf` | `appendix/` (see below) | stack `dp1_default` |
+
+Note that the catalog-properties figures read the **`dp1_pai24`** sample, which uses the expanded Pai & Blanton (2024) kcorrect template set, not the default template set.
+
+The appendix stamp grid is different from the rest.
+It lives under `appendix/`, must be run inside the Rubin Science Platform because it fetches image cutouts.
+
+The remaining notebooks produce supporting material rather than paper figures: `plot_cleaning.ipynb`, `plot_jackknife_regions.ipynb`, and `calculate_dust_mass.ipynb`.
+
+## Repository layout
 
 ```text
-analysis.yaml -> sample.yaml -> catalog.yaml
+src/dusty_colors/   the package: config, pipeline stages, estimator, fits, plotting
+  appendix/         appendix diagnostics, lower maintenance tier
+scripts/            the pipeline runner plus one-off data download and build scripts
+configs/            analysis, sample, and catalog YAML
+notebooks/          figure and diagnostic notebooks
+appendix/           appendix notebooks and their build script, see appendix/README.md
+tests/              pytest suite
+data/               raw inputs (gitignored)
+results/            pipeline outputs (gitignored)
+figures/            paper figures (gitignored)
 ```
 
-Each stage has an `id`, a config hash, expected outputs, and a `manifest.yaml`.
-Catalog outputs are written to `results/catalogs/<catalog_id>/`, samples to
-`results/samples/<sample_id>/`, and stacks to `results/stacks/<analysis_id>/`.
+Code under `appendix/` and `src/dusty_colors/appendix/` supports the paper appendices and is deliberately held to a lower standard than the core.
+It is excluded from linting and type checking, and should not be taken as a model for how the rest of the code is written.
+See [appendix/README.md](appendix/README.md).
 
-### Catalog preparation
+## Development
 
-Catalog YAML files load raw tables, join sources, adapt them to the canonical
-schema, add optional catalog-level corrections/enrichments, and write
-`catalog.parquet` plus `footprint.parquet`.
-
-Useful catalog options:
-
-- `adapter`: currently `rubin_dp1` or `clauds_sextractor`; adapter options include
-  `bands`, `photometry` (`flux` or `mag`), `columns` for canonical column
-  mapping, DP1 `flux_type`/`extendedness_min`, and CLAUDS `mag_kind`,
-  `band_prefix`, `band_map`, `field`, and `apply_aperture_offset`.
-- `primary_source` and `sources`: each source has `path` plus optional `rename`,
-  `query`, `finite`, `drop_duplicates`, and `columns`. Non-primary sources add
-  `join` with either `on` or `left_key`/`right_key`, plus optional `how`,
-  `suffixes`, `validate`, and `drop_right_key`.
-- `photoz.combine`: combines `estimates` with `z` and either `err` or
-  `err_low`/`err_high`; optional output names are `z_col`, `err_col`, and
-  `diff_col`. Each estimate also gets a `photoz_<label>` and
-  `photoz_sigma_<label>` diagnostic column for stricter sample cuts.
-- `extinction`: `enabled`, `ebv_column`, `bands`, and per-band `coefficients`.
-- `enrichments`: `kcorrect` and `halo_mass`, each with `enabled`. `kcorrect`
-  accepts `model` or `responses`, plus `responses_out`,
-  `responses_map`, `redshift_range`, `nredshift`, `abcorrect`,
-  `interpolate_templates`, `response_bands`, `absmag_bands`, `redshift_col`,
-  `min_redshift`, `max_redshift`, `error_floor`, `stellar_mass_col`, and
-  `linear_stellar_mass_col`. `halo_mass` uses the Moster et al. (2013)
-  stellar-to-halo-mass relation and accepts `stellar_mass_col`,
-  `stellar_mass_is_log`, `redshift_col`, `min_redshift`, `max_redshift`,
-  `halo_mass_col`, `r200_col`, `log_mass_min`, and `log_mass_max`.
-- `footprint`: `fields`, `field_radius_deg`, and HEALPix `nside`.
-
-### Sample selection and cleaning
-
-Sample YAML files point at a catalog YAML, apply foreground/background cuts, and
-write `foreground.parquet` and `background.parquet`.
-
-Selection options include `foreground_z`, `background_z`, `photoz_max_sigma`,
-`photoz_max_sigma_norm`, `photoz_estimate_max_sigma`, `photoz_max_diff_norm`,
-`blendedness_max`, `magnitude_limits`, `shared_query`,
-`foreground_query`, and `background_query`. `pixel_depth_cuts` computes
-per-pixel limiting magnitudes from `fluxerr_template` using `depth_sigma`, then
-applies `valid_range`, `min_occupancy`, `complete_to`, and
-`drop_shallowest`; the sample footprint written after these cuts defines the
-accepted random-catalog footprint. `jackknife.regions_per_field` assigns
-angular-sector jackknife regions after sample cuts. Optional structured cuts can
-be turned off with `enabled: false`. Before these cuts are written, the pipeline
-always applies minimal validity filters: finite positions/redshifts,
-galaxy/mask/quality flags, finite requested photometry, and positive photometry
-errors.
-
-Cleaning can be configured globally or separately for `foreground` and
-`background`. The cleaning block can use `finite_columns`, `robust_clip`,
-`redshift_trend`, `column_redshift_trend`, `isolation_forest`, and
-`column_isolation_forest`. `robust_clip` accepts `columns` and `sigma`.
-`redshift_trend` accepts `columns`, `redshift_col`,
-polynomial `degree`, `output_suffix`, `trend_suffix`, and `center`; it adds
-derived trend and trend-removed columns. `column_redshift_trend` applies
-binned-median redshift detrending to selected columns and can either write
-suffixed columns or overwrite the selected columns. `isolation_forest` accepts
-`columns`, `contamination`, `n_estimators`, `max_samples`, `random_state`,
-`min_samples`, `drop_nonfinite`, `scale`, `score_col`, `label_col`, and the
-scikit-learn options `max_features`, `bootstrap`, `n_jobs`, and `warm_start`.
-`column_isolation_forest` uses the same model options but masks outliers in each
-selected column with `NaN` while preserving rows.
-
-### TreeCorr stacking
-
-Analysis YAML files point at a sample YAML and own only stack settings. TreeCorr
-is the only stacker; there is no `engine` option. The stack stage consumes the
-prepared sample and catalog footprint, then writes one `stack_<mode>.npz` per
-configured mode plus `config_resolved.yaml`. The main stack NPZ contains the
-science signal, jackknife arrays, and color-space component profiles needed to
-rebuild correction variants. `stack_<mode>_provenance.npz` contains raw-space
-profiles, pair counts, and derived intermediate estimator terms. With
-`diagnostic_plots` enabled, `stack_<mode>_diagnostics.npz` contains the histogram
-inputs for diagnostic figures.
-
-Stack options include `colors`, `modes` (`fcolors` and/or `mcolors`),
-`r_bin_edges` as an explicit list or `geomspace`/`linspace`/`logspace`,
-`reference_annulus`, `snr_max`, `bin_slop`, `num_threads`, `jackknife`,
-`patch_col`, `cross_patch_weight`, `random_correction`, `random_multiplier`,
-`random_seed`, `random_nside`, `random_weighting`, `flipped_correction`,
-`diagnostic_plots`, `diagnostic_photoz_bins`, and `diagnostic_color_bins`. Set
-`flipped_correction: false` to measure the forward stack minus the random forward
-stack, with the same reference-annulus subtraction, without subtracting
-foreground-color flipped stacks.
-
-Set `random_weighting` to make the otherwise uniform random catalogs match the
-real foreground/background distribution in per-pixel depth or noise features.
-For example, the following weights randoms in jackknife patches so their binned
-local-depth distribution matches the real sample:
-
-```yaml
-stack:
-  random_weighting:
-    enabled: true
-    depth:
-      bands: [g, r, i, z]
-      fluxerr_template: cmodel_fluxerr_{band}
-      depth_sigma: 5
-    n_bins: 5
+```bash
+pytest                      # run the test suite
+black src tests scripts     # format
+isort src tests scripts     # sort imports
+flake8 src tests scripts    # lint
+mypy src                    # type check
 ```
 
-Each analysis run also refreshes standard stack figures in
-`results/stacks/<analysis-id>`: one square log-log jackknife-sample plot for the
-first configured color, and one square log-log full-signal plot for every color,
-for each configured stack mode. With `diagnostic_plots` enabled, stack outputs
-also include a diagnostics NPZ with pair-weighted background photo-z and
-magnitude-color histograms for each radial bin; the pipeline saves one photo-z
-diagnostic and one color diagnostic per configured color.
+Notebook outputs are stripped before commit.
+After cloning, enable this once:
 
-Stack plotting helpers also live in `dusty_colors.plotting` for manual use. They
-load the analysis YAML color order and apply the project Matplotlib style:
-
-```python
-from dusty_colors.plotting import save_stack_figures
-
-save_stack_figures(
-    "configs/analyses/dp1_pai24_default.yaml",
-    "figures",
-    mode="fcolors",
-)
+```bash
+nbstripout --install
 ```
+
+Do not commit anything in `data/`, `results/`, or `figures/`.
+Large catalog files committed by accident are extremely difficult to remove from history later.

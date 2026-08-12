@@ -5,30 +5,48 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "dusty-colors"
 version = "0.1.0"
-description = "Analysis of dusty galaxy colors"
+description = "Impact of foreground dust on background galaxy colors"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.11"
+
+# Runtime dependencies: everything imported by src/dusty_colors.
+# Install these into a conda environment; see README.md for setup.
 dependencies = [
     "numpy>=2.3",
     "scipy>=1.16",
     "matplotlib>=3.10",
     "astropy>=7.1",
     "pandas>=2.3",
-    "jupyterlab>=4.4",
+    "pyarrow>=21.0",
+    "pyyaml>=6.0",
+    "healpy>=1.19",
+    "treecorr>=5.1",
+    "kcorrect>=5.1",
+    "scikit-learn>=1.7",
+    "dust_extinction>=1.7",
+]
+
+[project.optional-dependencies]
+# Formatting, linting, and the test suite.
+dev = [
     "black>=25.9",
     "isort>=6.0",
     "flake8>=7.0",
     "mypy>=1.5",
     "pytest>=8.0",
-    "pyarrow>=21.0",
-    "healpy>=1.19",
-    "healsparse>=1.11",
-    "treecorr>=5.1",
-    "kcorrect>=5.1",
-    "scikit-learn>=1.7",
+    "nbstripout>=0.7",
+]
+
+# Only needed to run the notebooks under notebooks/.
+notebooks = [
+    "jupyterlab>=4.4",
+    "ipykernel>=6.29",
     "seaborn>=0.13",
-    "dust_extinction>=1.7",
+]
+
+# Only needed by the one-off download scripts under scripts/.
+data = [
     "pzserver>=0.3",
 ]
 
@@ -41,5 +59,18 @@ dusty_colors = ["matplotlibrc"]
 [tool.black]
 line-length = 88
 
+[tool.isort]
+profile = "black"
+line_length = 88
+
 [tool.mypy]
 ignore_missing_imports = true
+# Appendix code is a lower maintenance tier; see appendix/README.md.
+exclude = ["src/dusty_colors/appendix/"]
+
+[[tool.mypy.overrides]]
+module = "dusty_colors.appendix.*"
+ignore_errors = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -5,7 +5,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from dusty_colors.color_split_bias import (
+from dusty_colors.appendix.color_split_bias import (
     BG_REDDER_GROUP,
     FG_REDDER_GROUP,
     HIGH_GROUP,
