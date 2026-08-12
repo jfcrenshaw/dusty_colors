@@ -81,9 +81,9 @@ Put the *what* in the docstring and keep inline comments for the *why*, so they 
 
 ## Current state
 
-A cleanup is in progress; see [CLEANUP_PLAN.md](CLEANUP_PLAN.md) for the phased plan and the known rough edges.
-`treecorr_stacker.py` is still one large class, now 1,523 lines after random-catalog generation moved to `randoms.py`.
-Extracting diagnostics is the next planned step, so prefer changes that move toward that rather than adding to the existing class.
+A cleanup is largely complete; see [CLEANUP_PLAN.md](CLEANUP_PLAN.md) for what was done and [ARCHITECTURE.md](ARCHITECTURE.md) for the known rough edges.
+`treecorr_stacker.py` is still one large class at 1,448 lines, after random-catalog generation moved to `randoms.py` and the pair histograms to `diagnostics.py`.
+What remains is mostly the estimator itself, so prefer adding new concerns as their own module rather than growing this class.
 
 `tests/test_stacker_characterization.py` pins all 284 stack output arrays bit-exactly.
 Run it after any change to the estimator.

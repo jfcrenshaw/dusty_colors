@@ -28,6 +28,10 @@ You invoke the pipeline by naming an analysis config, which configures the last 
 The reason for the backwards references is that it makes variants cheap.
 An analysis config is a few lines that name an existing sample, so trying a new radial binning costs one small file and reuses the catalog and sample already on disk.
 
+Sample configs go further and inherit with `extends`, which deep-merges a config onto a named base, so a variant states only what makes it different.
+`extends` is consumed while loading, so a merged config hashes exactly like the equivalent standalone file and rewriting one does not invalidate results already on disk.
+See [docs/configuration.md](docs/configuration.md) for the merge rules.
+
 Each stage writes its outputs plus a `manifest.yaml` recording a stable hash of its resolved config together with the hashes of its upstream stages.
 On a rerun, a stage is skipped if its outputs exist and its hash still matches.
 If the outputs exist but the hash has changed, the runner refuses to proceed and names the force flag that would overwrite them.
@@ -119,7 +123,9 @@ Recorded honestly so they are not mistaken for intentional design.
 
 - `treecorr_stacker.py` is still a single 1,448-line class, now holding the estimator and its TreeCorr plumbing after random-catalog generation and diagnostics moved out.
   Its remaining bulk is the estimator itself, which is closer to an appropriate size; see `CLEANUP_PLAN.md`.
-- Two 3-line helpers, `_parameter_covariance` and a `_profile_errors` variant, are still duplicated between the two fit modules.
-  They are small enough that a shared module would cost more than it saves.
-- Sample configs duplicate each other almost entirely, since there is no `extends:` mechanism yet.
+- `selection.py` is 1,044 lines, of which roughly 120 are Markdown and JSON report rendering.
+  Splitting that out was tried and reverted: the rendering is reached through a single call, but the report *construction* it sits next to is called throughout the cuts, so the separation bought less than the extra module cost.
+- `_parameter_covariance` (3 lines) is identical in both fit modules, and each has its own 8-line `_profile_errors`.
+  The `_profile_errors` pair are deliberately different: `dust_extinction_fit` sanitises non-finite errors inside the helper because they feed a covariance block before any filtering, while `color_power_law_fit` filters at the call site.
 - `pipeline.py` dispatches stages by dynamic string import, which is more indirection than three fixed stages need.
+- `prefer_observable_columns` is a stack option that no config sets, still wired through `treecorr_stacker.py`.
