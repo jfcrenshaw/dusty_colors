@@ -57,22 +57,29 @@ class StackResults:
         try:
             return self.diagnostics[key]
         except KeyError as exc:
-            raise KeyError(
-                f"{_stack_diagnostic_file(self.stack_dir, self.mode)} is missing {key!r}"
-            ) from exc
+            path = _stack_diagnostic_file(self.stack_dir, self.mode)
+            raise KeyError(f"{path} is missing {key!r}") from exc
 
 
 def default_style_path() -> Path:
-    """Return the package-local Matplotlib style path."""
+    """Return the package-local Matplotlib style path.
+
+    Returns
+    -------
+    Path
+        Path to the ``matplotlibrc`` shipped inside the package.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the style file is missing, which means the package was installed
+        without its package data.
+    """
 
     path = Path(__file__).with_name("matplotlibrc")
-    if path.exists():
-        return path
-
-    fallback = Path(__file__).resolve().parents[2] / "notebooks" / "matplotlibrc"
-    if fallback.exists():
-        return fallback
-    raise FileNotFoundError("Could not find dusty_colors matplotlibrc")
+    if not path.exists():
+        raise FileNotFoundError(f"Could not find dusty_colors matplotlibrc at {path}")
+    return path
 
 
 def use_matplotlib_style(style_path: str | Path | None = None) -> Path:

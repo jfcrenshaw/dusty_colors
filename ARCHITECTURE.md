@@ -114,9 +114,8 @@ Two color modes exist.
 
 Recorded honestly so they are not mistaken for intentional design.
 
-- `treecorr_stacker.py` is a single 2,458-line class holding the estimator alongside random-catalog generation, radial rebinning, diagnostics, and TreeCorr plumbing.
+- `treecorr_stacker.py` is a single 2,001-line class holding the estimator alongside random-catalog generation, diagnostics, and TreeCorr plumbing.
   Splitting it is planned; see `CLEANUP_PLAN.md`.
-- The radial rebinning and basis-cache machinery is not exercised by any config.
 - `StackResults` and the stack-file loaders live in `plotting.py`, which is why several fit-module helpers are duplicated.
 - Sample configs duplicate each other almost entirely, since there is no `extends:` mechanism yet.
 - `pipeline.py` dispatches stages by dynamic string import, which is more indirection than three fixed stages need.

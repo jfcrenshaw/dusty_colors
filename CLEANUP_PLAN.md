@@ -7,13 +7,16 @@ Delete this file once the work is done.
 
 The core of this repo is in better shape than the directory listing suggests.
 The three-stage YAML pipeline (`catalog -> sample -> stack`) with content-hashed manifests and skip/force semantics is a genuinely good design for reproducible analysis, and `config.py` and `pipeline.py` are clean and well documented.
-All 102 tests pass in 8.4 seconds.
 
-The problems are concentrated in four places: repository hygiene, a 2,458-line god class, roughly 1,200 lines of dead exploratory code that no config exercises, and documentation that describes a refactor rather than the code.
-None of this requires an architectural rewrite.
+The problems were concentrated in four places: repository hygiene, a 2,458-line god class, dead exploratory code that no config exercises, and documentation that described a refactor rather than the code.
+None of this required an architectural rewrite.
 
-Current size: 11,324 lines across 18 modules in `src/dusty_colors/`, 4,372 lines of tests, 1,714 lines of scripts.
-Target after cleanup: roughly 7,000 lines of core package plus a clearly separated appendix package.
+Original size: 11,324 lines across 18 modules in `src/dusty_colors/`, 4,372 lines of tests, 1,714 lines of scripts.
+
+**Progress so far.**
+Hygiene, environment, and documentation are done, the appendix code is separated to its own tier, and the dead rebinning machinery is gone.
+The stacker is down to 2,001 lines and the suite passes at 106 tests.
+The remaining substantial work is splitting the stacker (Phase 4) and the config and pipeline tidying in Phase 5.
 
 ## What is working, and should not be touched
 
@@ -157,21 +160,14 @@ Those outputs can no longer be reproduced.
 - `notebooks/matplotlibrc` duplicates `src/dusty_colors/matplotlibrc`, differing only by a trailing newline.
 - No notebook states which paper figure it produces.
 
-### 10a. `paper.tex` is stale and actively misleading
+### 10a. `paper.tex` was stale and actively misleading — RESOLVED 2026-08-12
 
-`paper.tex` was last committed 2026-06-03 and includes only 7 `\includegraphics` calls.
-At least `fig_chromaticity.pdf` (dated 2026-08-12) is in the submitted manuscript but absent from this file.
+`paper.tex` was last committed 2026-06-03 and included only 7 `\includegraphics` calls, omitting `fig_chromaticity.pdf` which is in the submitted manuscript.
 
-This is a trap rather than a harmless staleness.
-Anyone reasoning about which figures matter by grepping `paper.tex` will silently get the wrong answer, which is exactly what happened during this cleanup.
+This was a trap rather than harmless staleness: anyone reasoning about which figures matter by grepping it would silently get the wrong answer, which is exactly what happened during this cleanup.
 
-Pick one of:
-
-- update `paper.tex` to match the submitted manuscript and keep it in sync;
-- remove it from the repo and link to the arXiv source instead;
-- leave it, but add a header comment stating the date it was frozen.
-
-The status of `fig_result_sensitivity.pdf` and `fig_r_band_stamp_grid.pdf` is still unconfirmed for the same reason.
+Resolved by deleting the file.
+The manuscript now lives only with the submission, and the README figure table is the repository's answer to "which figures are current".
 
 ### 10. Small duplication across modules
 
@@ -245,8 +241,9 @@ Phases 1 and 2 are pure wins with no science risk and are worth doing regardless
 ### Phase 1: hygiene (about half a day, no code changes)
 
 - ~~Reclaim the 20 GB of git history.~~ Done 2026-08-12, see finding 1.
-- Delete `_old/`, `build/`, `.mypy_cache/`, `.pytest_cache/`, `paper.log`, and the `.DS_Store` files.
-- Decide the fate of `results_safe/` (3.6 GB) and the orphaned `results/stacks/dp1_*_explore*` directories.
+- ~~Delete `build/`, `.mypy_cache/`, `.pytest_cache/`, `paper.log`, and the `.DS_Store` files.~~ Done 2026-08-12.
+- ~~`results_safe/` (3.6 GB).~~ Removed 2026-08-12.
+- Still present locally, all gitignored so invisible to a fresh clone: `_old/` (88 KB), `.venv/` (301 MB), and 8 orphaned `results/stacks/` directories (1.5 MB) whose configs now live in `_old/`.
 - Move `pzserver_token.txt` out of the repo.
 - Add `nbstripout` so notebook outputs stop entering git.
 
@@ -261,16 +258,15 @@ Phases 1 and 2 are pure wins with no science risk and are worth doing regardless
 
 Tests pass and all internal documentation links resolve.
 
-### Phase 3: delete dead code (about a day)
+### Phase 3: delete dead code — DONE 2026-08-12
 
-Do this before the refactor in Phase 4, so there is less code to move.
+- Removed radial rebinning and the basis cache: 451 lines from `treecorr_stacker.py`, plus two tests.
+  The stacker went from 2,458 to 2,001 lines.
+  `parse_array_spec` and `stable_hash` imports became unused and were dropped.
+- CLAUDS and `mcolors` were kept by decision, so they are no longer counted as dead code.
+- `prefer_observable_columns` is still present and still unused.
 
-- Remove radial rebinning and the basis cache.
-- Remove the CLAUDS adapter, script, tests, and configs.
-- Remove `prefer_observable_columns`.
-- Remove `mcolors` if you confirm it is not wanted.
-
-Expected reduction: about 1,200 lines of source and tests.
+Verified no regression: mypy went from 77 errors to 73 (the removed code accounted for 4), `src/` is now flake8-clean, and the suite passes at 106 tests.
 
 ### Phase 4: split the stacker (two to three days, the real work)
 
@@ -319,9 +315,6 @@ Consequence: Phase 3 shrinks to radial rebinning plus `prefer_observable_columns
    `fig_result_sensitivity.pdf` is listed in the README on the assumption it is current, since it is freshly produced from seven systematics variants.
    Confirm, and see finding 10a about `paper.tex` being an unreliable source for this.
 
-3. **`results_safe/` (3.6 GB): is this a deliberate backup of the published results?**
-   If so it should be named and documented, not left as a mystery sibling of `results/`.
-
-4. **How much do you want to preserve exact reproducibility of the published numbers?**
+3. **How much do you want to preserve exact reproducibility of the published numbers?**
    Assumed yes for now, so Phase 4 will be treated as a strict no-op guarded by characterization tests.
    Say otherwise if that is too conservative.

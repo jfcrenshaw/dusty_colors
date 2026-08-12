@@ -41,6 +41,10 @@ python scripts/run_stack.py configs/analyses/dp1_default.yaml [--force-{stack,sa
 - Science choices belong in YAML, never in command-line arguments or hardcoded constants.
 - Never count parent directories to find the repository root.
   Use `from dusty_colors import get_root`, optionally with `get_root(__file__)` when the result must not depend on the working directory.
+- Notebooks that plot must call `use_matplotlib_style()` from `dusty_colors.plotting`.
+  The style is not picked up implicitly, and `src/dusty_colors/matplotlibrc` is the only copy.
+- Do not put `backend` in `matplotlibrc`; it is appearance-only.
+  `rc_file()` ignores the key anyway, and a script needing a specific backend should call `mpl.use(...)` itself.
 - Never overwrite raw photometry columns; cleaning adds derived columns instead.
 - Adding a survey means adding a catalog adapter, not touching the estimator.
 
