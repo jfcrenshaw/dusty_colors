@@ -128,7 +128,18 @@ A student opening `src/dusty_colors/` should see the estimator, not the referee-
 Of its 1,044 lines, roughly 200 are Markdown and JSON report generation (`format_sample_report`, `_markdown_stage_table`, `_markdown_field_table`, `_json_ready`).
 The selection logic and the reporting logic have no reason to share a file.
 
-### 7. Config files duplicate each other almost entirely
+### 7. Config files duplicate each other almost entirely — RESOLVED 2026-08-12
+
+`config.py` gained an `extends` key that deep-merges a config onto a base.
+The eight `dp1_*` sample variants went from roughly 70 lines each to between 5 and 10, and the directory as a whole from 628 lines to 128.
+Adding a cut is now a one-file edit rather than a nine-file one.
+
+`extends` is consumed during loading, so all 16 checked-in analysis graphs hash identically across all three stages to before the change, verified by capturing the hashes first.
+No existing result was invalidated.
+
+The naming inconsistencies noted below are still present.
+
+### 7b. Original finding
 
 There are 11 sample configs of about 66 lines each, several differing by a single line.
 `configs/samples/dp1_no_ztrend.yaml` differs from `dp1_default.yaml` only in `id` and one `enabled: true` to `enabled: false`.

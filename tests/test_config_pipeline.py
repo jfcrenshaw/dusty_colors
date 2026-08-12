@@ -21,6 +21,7 @@ if str(SRC) not in sys.path:
 
 from dusty_colors.config import (  # noqa: E402
     load_resolved_config,
+    load_yaml,
     parse_array_spec,
     stable_hash,
 )
@@ -273,6 +274,128 @@ class ConfigPipelineTest(unittest.TestCase):
                     self.assertGreaterEqual(len(edges), 2)
                     self.assertTrue(np.isfinite(edges).all())
                     self.assertTrue(np.all(np.diff(edges) > 0))
+
+
+class ConfigExtendsTest(unittest.TestCase):
+    """Tests for the `extends` merge used by the sample config variants."""
+
+    def _base(self, directory: Path) -> Path:
+        path = directory / "base.yaml"
+        _write_yaml(
+            path,
+            {
+                "id": "base",
+                "catalog": "cat.yaml",
+                "selection": {"foreground_z": [0.2, 0.5], "query": "a > 1"},
+                "cleaning": {"background": {"trend": {"enabled": True, "degree": 2}}},
+            },
+        )
+        return path
+
+    def test_merged_config_matches_an_equivalent_standalone_file(self) -> None:
+        """The whole point: merging must not change the hash, so existing
+        results stay valid when a config is rewritten to use `extends`."""
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._base(directory)
+
+            variant = directory / "variant.yaml"
+            _write_yaml(
+                variant,
+                {
+                    "id": "variant",
+                    "extends": "base.yaml",
+                    "cleaning": {"background": {"trend": {"enabled": False}}},
+                },
+            )
+
+            standalone = directory / "standalone.yaml"
+            _write_yaml(
+                standalone,
+                {
+                    "id": "variant",
+                    "catalog": "cat.yaml",
+                    "selection": {"foreground_z": [0.2, 0.5], "query": "a > 1"},
+                    "cleaning": {
+                        "background": {"trend": {"enabled": False, "degree": 2}}
+                    },
+                },
+            )
+
+            merged = load_yaml(variant)
+            self.assertEqual(merged, load_yaml(standalone))
+            self.assertEqual(stable_hash(merged), stable_hash(load_yaml(standalone)))
+            self.assertNotIn("extends", merged)
+
+    def test_nested_mappings_merge_but_lists_are_replaced(self) -> None:
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._base(directory)
+            variant = directory / "variant.yaml"
+            _write_yaml(
+                variant,
+                {
+                    "id": "variant",
+                    "extends": "base.yaml",
+                    "selection": {"foreground_z": [0.3, 0.6]},
+                },
+            )
+            merged = load_yaml(variant)
+            # The sibling key survives the merge...
+            self.assertEqual(merged["selection"]["query"], "a > 1")
+            # ...but the list is replaced wholesale, not merged element-wise.
+            self.assertEqual(merged["selection"]["foreground_z"], [0.3, 0.6])
+
+    def test_chained_extends_resolves(self) -> None:
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._base(directory)
+            middle = directory / "middle.yaml"
+            _write_yaml(
+                middle,
+                {"id": "middle", "extends": "base.yaml", "selection": {"query": "b>2"}},
+            )
+            leaf = directory / "leaf.yaml"
+            _write_yaml(
+                leaf,
+                {"id": "leaf", "extends": "middle.yaml", "catalog": "other.yaml"},
+            )
+            merged = load_yaml(leaf)
+            self.assertEqual(merged["id"], "leaf")
+            self.assertEqual(merged["catalog"], "other.yaml")
+            self.assertEqual(merged["selection"]["query"], "b>2")
+            self.assertEqual(merged["selection"]["foreground_z"], [0.2, 0.5])
+
+    def test_missing_id_is_rejected(self) -> None:
+        """Inheriting the parent's id would silently overwrite its outputs."""
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self._base(directory)
+            variant = directory / "variant.yaml"
+            _write_yaml(variant, {"extends": "base.yaml"})
+            with self.assertRaises(ValueError) as caught:
+                load_yaml(variant)
+            self.assertIn("must declare its own 'id'", str(caught.exception))
+
+    def test_circular_extends_is_rejected(self) -> None:
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            first = directory / "first.yaml"
+            second = directory / "second.yaml"
+            _write_yaml(first, {"id": "first", "extends": "second.yaml"})
+            _write_yaml(second, {"id": "second", "extends": "first.yaml"})
+            with self.assertRaises(ValueError) as caught:
+                load_yaml(first)
+            self.assertIn("Circular", str(caught.exception))
+
+    def test_missing_target_is_reported_with_both_paths(self) -> None:
+        with TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            variant = directory / "variant.yaml"
+            _write_yaml(variant, {"id": "variant", "extends": "nope.yaml"})
+            with self.assertRaises(FileNotFoundError) as caught:
+                load_yaml(variant)
+            self.assertIn("nope.yaml", str(caught.exception))
 
 
 if __name__ == "__main__":

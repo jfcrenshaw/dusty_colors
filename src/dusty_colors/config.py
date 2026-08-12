@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -145,12 +146,53 @@ def format_path(path: str | Path, root: str | Path) -> str:
         return str(path)
 
 
-def _load_stage_yaml(path: Path) -> dict[str, Any]:
+def _load_stage_yaml(path: Path, _chain: tuple[Path, ...] = ()) -> dict[str, Any]:
+    """Load one stage YAML, resolving `extends` into a merged mapping."""
     with path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
         raise ValueError(f"YAML config must contain a mapping: {path}")
-    return data
+
+    base_ref = data.pop("extends", None)
+    if base_ref is None:
+        return data
+
+    # A variant that inherits its parent's id would silently overwrite the
+    # parent's outputs, so make declaring a new one mandatory.
+    if "id" not in data:
+        raise ValueError(f"Config using 'extends' must declare its own 'id': {path}")
+
+    base_path = _resolve_path(base_ref, path.parent)
+    resolved = path.resolve()
+    if base_path in _chain or base_path == resolved:
+        cycle = " -> ".join(str(item) for item in (*_chain, resolved, base_path))
+        raise ValueError(f"Circular 'extends' chain: {cycle}")
+    if not base_path.exists():
+        raise FileNotFoundError(
+            f"'extends' target not found: {base_path} (from {path})"
+        )
+
+    base = _load_stage_yaml(base_path, (*_chain, resolved))
+    # `extends` is consumed here rather than kept, so a merged config hashes
+    # exactly like the equivalent standalone file and existing results stay
+    # valid.
+    return _deep_merge(base, data)
+
+
+def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, Any]:
+    """Merge `override` onto `base`, recursing into nested mappings.
+
+    Only mappings merge. Scalars, lists, and strings are replaced wholesale,
+    so an override cannot append to a list or edit part of a query string.
+    """
+    merged = dict(base)
+    for key, value in override.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, Mapping):
+            merged[key] = _deep_merge(current, value)
+        else:
+            merged[key] = value
+    return merged
 
 
 def _parse_analysis_arrays(data: dict[str, Any]) -> dict[str, Any]:

@@ -16,6 +16,30 @@ You run the pipeline by naming an analysis config, and the runner resolves the c
 Each file needs an `id`, which determines its output directory under `results/`.
 Two configs sharing an `id` will overwrite each other's outputs, so keep ids unique.
 
+## Inheriting from another config with `extends`
+
+Most variants differ from a baseline in one or two settings, so they inherit the rest with `extends`:
+
+```yaml
+# configs/samples/dp1_no_ztrend.yaml
+id: dp1_no_ztrend
+extends: dp1_default.yaml
+cleaning:
+  background:
+    column_redshift_trend:
+      enabled: false
+```
+
+The path is relative to the extending file's own directory.
+Chains are allowed, cycles are rejected, and a config using `extends` must declare its own `id` — inheriting the parent's would silently overwrite the parent's outputs.
+
+Nested mappings merge key by key, so the example above changes one flag and leaves every other cleaning setting intact.
+Everything else is replaced wholesale: lists, strings, and numbers take the override's value entirely.
+That means a query string cannot be extended, only restated, which is why `configs/samples/dp1_red.yaml` repeats the whole `foreground_query` to add its color cut.
+
+`extends` is consumed during loading, so a merged config produces exactly the same hash as the equivalent standalone file.
+Rewriting a config to use `extends` therefore does not invalidate results already on disk.
+
 ## Catalog config
 
 Catalog YAML loads raw tables, joins them, adapts them to the canonical schema, applies corrections and enrichments, and writes `catalog.parquet` and `footprint.parquet`.
