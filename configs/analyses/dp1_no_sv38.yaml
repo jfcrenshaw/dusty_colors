@@ -1,0 +1,4 @@
+# dp1_default stacked on the sample with the Rubin SV 38 7 field removed.
+id: dp1_no_sv38
+extends: dp1_default.yaml
+sample: configs/samples/dp1_no_sv38.yaml

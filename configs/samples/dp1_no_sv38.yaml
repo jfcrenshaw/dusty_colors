@@ -1,0 +1,16 @@
+# Drops the Rubin SV 38 7 field, as a check that no single field drives the
+# measurement. Identical to dp1_default otherwise.
+id: dp1_no_sv38
+extends: dp1_default.yaml
+selection:
+  # `field` is assigned in the catalog stage, so it is available here. The rest
+  # of the query repeats dp1_default because `extends` replaces strings whole
+  # rather than appending, so an override cannot add a clause in isolation.
+  #
+  # Dropping the field here, ahead of the pixel depth cuts, also means the
+  # `drop_shallowest` quantile is taken over the three retained fields only.
+  # That is deliberate: the cut should describe the sample actually being
+  # stacked, so this variant differs from dp1_default by more than a row cut.
+  shared_query: >-
+    z_phot_err < 0.2 and z_phot_diff < 0.2
+    and field != "Rubin SV 38 7"
