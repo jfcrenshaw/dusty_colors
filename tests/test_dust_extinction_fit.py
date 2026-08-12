@@ -143,6 +143,26 @@ class DustExtinctionFitTest(unittest.TestCase):
         self.assertAlmostEqual(fit.amplitude_av_mag, 0.025, delta=1.0e-4)
         self.assertAlmostEqual(fit.alpha, -0.75, delta=1.0e-3)
 
+    def test_fit_can_use_diagonal_covariance(self) -> None:
+        foreground_redshift = 0.35
+        results = StackResults(
+            stack_dir=Path("unused"),
+            mode="fcolors",
+            colors=("g-r", "r-i", "i-z"),
+            arrays=_synthetic_stack_arrays(foreground_redshift=foreground_redshift),
+        )
+
+        fit = fit_dust_extinction_law(
+            results,
+            config=DustExtinctionFitConfig(covariance="diagonal"),
+            foreground_redshift=foreground_redshift,
+        )
+
+        self.assertEqual(fit.covariance_mode, "diagonal_errors")
+        self.assertEqual(fit.covariance_method, "diagonal_errors")
+        self.assertAlmostEqual(fit.amplitude_av_mag, 0.025, delta=1.0e-4)
+        self.assertAlmostEqual(fit.alpha, -0.75, delta=1.0e-3)
+
     def test_fit_accepts_average_magellanic_cloud_laws(self) -> None:
         foreground_redshift = 0.35
 
@@ -192,6 +212,7 @@ class DustExtinctionFitTest(unittest.TestCase):
             self.assertIn("amplitude_Av_at_pivot_mag", report)
             self.assertIn("radial_power_law_index_alpha", report)
             self.assertIn("R_V", report)
+            self.assertIn("covariance_mode: auto", report)
 
     def test_save_skips_stack_without_required_colors(self) -> None:
         with TemporaryDirectory() as tmp:

@@ -17,3 +17,7 @@ stack:
     n_bins: 3
   random_seed: 42
   jackknife: true
+  dust_extinction_fit:
+    radial_pivot_kpc: 20.0
+    covariance: diagonal_errors
+    fixed_rv: 3.1

@@ -17,6 +17,12 @@ from .observables import parse_color
 from .plotting import StackResults, load_stack_results
 
 DEFAULT_FIT_COLORS = ("g-r", "r-i", "i-z")
+COVARIANCE_MODES = (
+    "auto",
+    "full_jackknife",
+    "per_color_covariance",
+    "diagonal_errors",
+)
 DEFAULT_FILTER_WAVELENGTHS_UM = {
     "u": 0.3671,
     "g": 0.4827,
@@ -37,6 +43,7 @@ class DustExtinctionFitConfig:
     radial_pivot_kpc: float = 100.0
     foreground_redshift: float | None = None
     wavelengths_um: Mapping[str, float] | None = None
+    covariance: str = "auto"
     amplitude_bounds: tuple[float, float] = (0.0, np.inf)
     alpha_bounds: tuple[float, float] = (-5.0, 1.0)
     rv_bounds: tuple[float, float] = (2.0, 6.0)
@@ -87,6 +94,7 @@ class DustExtinctionFitResult:
     chi2: float
     dof: int
     p_value: float
+    covariance_mode: str
     covariance_rank: int
     covariance_method: str
     optimizer_success: bool
@@ -124,6 +132,9 @@ def parse_dust_extinction_fit_config(
         radial_pivot_kpc=float(raw.get("radial_pivot_kpc", 100.0)),
         foreground_redshift=_optional_float(raw.get("foreground_redshift")),
         wavelengths_um=raw.get("wavelengths_um"),
+        covariance=_covariance_mode(
+            raw.get("covariance", raw.get("covariance_method", "auto"))
+        ),
         amplitude_bounds=_bounds(raw.get("amplitude_bounds"), (0.0, np.inf)),
         alpha_bounds=_bounds(raw.get("alpha_bounds"), (-5.0, 1.0)),
         rv_bounds=_bounds(raw.get("rv_bounds"), (2.0, 6.0)),
@@ -202,7 +213,12 @@ def fit_dust_extinction_law(
     if foreground_redshift < 0:
         raise ValueError("Dust-extinction foreground_redshift must be non-negative")
 
-    data = stack_fit_data(results, fit_config.colors)
+    covariance_mode = _covariance_mode(fit_config.covariance)
+    data = stack_fit_data(
+        results,
+        fit_config.colors,
+        covariance=covariance_mode,
+    )
     lower, upper = _fit_bounds(fit_config)
     if np.any(lower >= upper):
         raise ValueError("Dust-extinction parameter bounds must be increasing")
@@ -280,6 +296,7 @@ def fit_dust_extinction_law(
         chi2=chi2,
         dof=dof,
         p_value=p_value,
+        covariance_mode=covariance_mode,
         covariance_rank=covariance_rank,
         covariance_method=data.covariance_method,
         optimizer_success=bool(optimized.success),
@@ -292,10 +309,13 @@ def fit_dust_extinction_law(
 def stack_fit_data(
     results: StackResults,
     colors: Sequence[str] = DEFAULT_FIT_COLORS,
+    *,
+    covariance: str = "auto",
 ) -> StackFitData:
     """Build the flattened color/radius vector used by the fit."""
 
     selected_colors = tuple(str(color) for color in colors)
+    covariance_mode = _covariance_mode(covariance)
     if not _has_required_colors(results, selected_colors):
         missing = [
             color
@@ -344,14 +364,30 @@ def stack_fit_data(
     finite = np.isfinite(radius_vector) & np.isfinite(signal_vector)
 
     covariance_method = "diagonal_errors"
-    if len(sample_blocks) == len(selected_colors) and _same_rows(sample_blocks):
+    has_full_jackknife = len(sample_blocks) == len(selected_colors) and _same_rows(
+        sample_blocks
+    )
+    has_per_color_covariance = len(covariance_blocks) == len(selected_colors)
+    if covariance_mode in {"auto", "full_jackknife"} and has_full_jackknife:
         samples = np.column_stack(sample_blocks)
         finite &= np.all(np.isfinite(samples), axis=0)
         covariance = _jackknife_covariance(samples)
         covariance_method = "full_jackknife"
-    elif len(covariance_blocks) == len(selected_colors):
+    elif covariance_mode == "full_jackknife":
+        raise ValueError(
+            "Dust-extinction covariance='full_jackknife' requires jackknife "
+            "samples for all fit colors with matching sample counts"
+        )
+    elif (
+        covariance_mode in {"auto", "per_color_covariance"} and has_per_color_covariance
+    ):
         covariance = _block_diag(covariance_blocks)
         covariance_method = "per_color_covariance"
+    elif covariance_mode == "per_color_covariance":
+        raise ValueError(
+            "Dust-extinction covariance='per_color_covariance' requires covariance "
+            "matrices for all fit colors"
+        )
     else:
         covariance = _block_diag(error_blocks)
 
@@ -498,6 +534,10 @@ def format_dust_extinction_fit(fit: DustExtinctionFitResult) -> str:
     """Format a fit result as a compact text report."""
 
     errors = fit.parameter_errors
+    model_equation = "  E(b1-b2, r) = A_V(pivot) * (r / pivot)^alpha "
+    model_equation += "* [(A_b1/A_V) - (A_b2/A_V)]"
+    alpha_line = f"  radial_power_law_index_alpha: {fit.alpha:.10g} "
+    alpha_line += f"+/- {errors[1]:.3g}"
     lines = [
         "Dust extinction law fit",
         f"created_at_utc: {datetime.now(timezone.utc).isoformat()}",
@@ -505,8 +545,7 @@ def format_dust_extinction_fit(fit: DustExtinctionFitResult) -> str:
         f"colors: {', '.join(fit.colors)}",
         "",
         "model:",
-        "  E(b1-b2, r) = A_V(pivot) * (r / pivot)^alpha "
-        "* [(A_b1/A_V) - (A_b2/A_V)]",
+        model_equation,
         f"  law: {fit.law}",
         f"  radial_pivot_kpc: {fit.radial_pivot_kpc:.10g}",
         f"  foreground_redshift: {fit.foreground_redshift:.10g}",
@@ -525,8 +564,7 @@ def format_dust_extinction_fit(fit: DustExtinctionFitResult) -> str:
             "parameters:",
             f"  amplitude_Av_at_pivot_mag: {fit.amplitude_av_mag:.10g} "
             f"+/- {errors[0]:.3g}",
-            f"  radial_power_law_index_alpha: {fit.alpha:.10g} "
-            f"+/- {errors[1]:.3g}",
+            alpha_line,
             _rv_parameter_line(fit),
             "",
             "goodness_of_fit:",
@@ -536,6 +574,7 @@ def format_dust_extinction_fit(fit: DustExtinctionFitResult) -> str:
             f"  p_value: {fit.p_value:.10g}",
             f"  n_data: {len(fit.data.signal_mag)}",
             f"  n_free_parameters: {len(fit.parameter_errors)}",
+            f"  covariance_mode: {fit.covariance_mode}",
             f"  covariance_rank: {fit.covariance_rank}",
             f"  covariance_method: {fit.covariance_method}",
             f"  optimizer_success: {fit.optimizer_success}",
@@ -615,6 +654,30 @@ def _optional_float(value: Any) -> float | None:
     if value is None or value == "auto":
         return None
     return float(value)
+
+
+def _covariance_mode(value: Any) -> str:
+    mode = str(value).lower()
+    aliases = {
+        "full": "full_jackknife",
+        "jackknife": "full_jackknife",
+        "jk": "full_jackknife",
+        "block": "per_color_covariance",
+        "per_color": "per_color_covariance",
+        "per-color": "per_color_covariance",
+        "per_color_cov": "per_color_covariance",
+        "diag": "diagonal_errors",
+        "diagonal": "diagonal_errors",
+        "errors": "diagonal_errors",
+    }
+    mode = aliases.get(mode, mode)
+    if mode not in COVARIANCE_MODES:
+        choices = ", ".join(COVARIANCE_MODES)
+        raise ValueError(
+            f"Unknown dust-extinction covariance mode {value!r}; "
+            f"expected one of: {choices}"
+        )
+    return mode
 
 
 def _bounds(value: Any, default: tuple[float, float]) -> tuple[float, float]:
