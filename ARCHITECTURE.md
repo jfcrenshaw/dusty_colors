@@ -78,6 +78,8 @@ Radial bins, color choices, sample cuts, and column mappings are never passed as
 | `cleaning.py` | Optional diagnostic cleaning transforms. |
 | `observables.py` | Flux-ratio and magnitude-color observable construction. |
 | `treecorr_stacker.py` | The TreeCorr estimator. |
+| `randoms.py` | Random catalogs inside the footprint, and depth-matched weights for them. |
+| `diagnostics.py` | Pair-weighted histograms of background properties by separation. |
 | `plotting.py` | Stack result loading and figures. |
 | `dust_extinction_fit.py` | Fit an extinction law to the measured color excess profiles. |
 | `color_power_law_fit.py` | Fit a power law to a single color profile. |
@@ -114,8 +116,8 @@ Two color modes exist.
 
 Recorded honestly so they are not mistaken for intentional design.
 
-- `treecorr_stacker.py` is a single 2,001-line class holding the estimator alongside random-catalog generation, diagnostics, and TreeCorr plumbing.
-  Splitting it is planned; see `CLEANUP_PLAN.md`.
+- `treecorr_stacker.py` is still a single 1,448-line class, now holding the estimator and its TreeCorr plumbing after random-catalog generation and diagnostics moved out.
+  Its remaining bulk is the estimator itself, which is closer to an appropriate size; see `CLEANUP_PLAN.md`.
 - `StackResults` and the stack-file loaders live in `plotting.py`, which is why several fit-module helpers are duplicated.
 - Sample configs duplicate each other almost entirely, since there is no `extends:` mechanism yet.
 - `pipeline.py` dispatches stages by dynamic string import, which is more indirection than three fixed stages need.

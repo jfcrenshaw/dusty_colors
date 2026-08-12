@@ -268,7 +268,23 @@ Tests pass and all internal documentation links resolve.
 
 Verified no regression: mypy went from 77 errors to 73 (the removed code accounted for 4), `src/` is now flake8-clean, and the suite passes at 106 tests.
 
-### Phase 4: split the stacker (two to three days, the real work)
+### Phase 4: split the stacker — LARGELY DONE 2026-08-12
+
+Guarded throughout by `tests/test_stacker_characterization.py`, which pins all 284 output arrays bit-exactly.
+Every step below left them unchanged.
+
+- Added the characterization test first, closing a real gap: no test ran `stacker.run()` at all, so the estimator had no output-level coverage.
+- Extracted `randoms.py` (649 lines): random catalog construction and depth-matched reweighting.
+- Extracted `diagnostics.py` (180 lines): pair-weighted histograms, with no knowledge of colors or modes.
+
+`treecorr_stacker.py` went 2,458 to 1,448 lines across Phases 3 and 4.
+Both extractions use plain functions with explicit arguments rather than mixins, so the moved code can be read and tested without constructing a stacker.
+
+The public interface is unchanged throughout: all 25 dataclass fields, `run_treecorr_stack`, the YAML schema, and `scripts/run_stack.py` are untouched.
+
+Remaining, if wanted: `selection.py` reporting split, and the `results.py` extraction that would dissolve the duplicated fit helpers.
+
+### Phase 4 original plan
 
 - Extract `randoms.py`, then `diagnostics.py`, then leave `stacker.py` as the estimator.
 - Add characterization tests first: run `dp1_default` before the split, save the output NPZ, and assert bit-identical output afterwards.
