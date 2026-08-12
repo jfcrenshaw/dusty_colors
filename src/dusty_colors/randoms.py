@@ -314,6 +314,9 @@ def _random_catalog_like(
         in_patch = catalog[treecorr_patch_col].to_numpy(int) == patch
         indices = np.where(in_patch)[0]
         n_random = max(1, int(np.ceil(multiplier * len(indices))))
+        # Randoms get fresh sky positions but borrow their distances from real
+        # objects in the same patch, so they inherit the real redshift
+        # distribution and the radial binning stays comparable.
         templates = rng.choice(indices, size=n_random, replace=True)
         ra, dec, pixel = _sample_patch_positions(
             pixels_by_patch[int(patch)],
@@ -346,9 +349,13 @@ def _sample_patch_positions(
     *,
     nside: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # Rejection sampling: draw uniformly inside a bounding box around the
+    # allowed pixels, then keep only the draws that land in one of them.
     pixels = np.asarray(pixels, dtype=int)
     pixel_set = set(pixels.tolist())
     lon, lat = hp.pix2ang(nside, pixels, nest=True, lonlat=True)
+    # pix2ang returns pixel centres, so pad the box by a pixel to avoid
+    # clipping the outer edge of the footprint.
     pixel_radius = np.rad2deg(np.sqrt(hp.nside2pixarea(nside)))
     ra_min = np.min(lon) - pixel_radius
     ra_max = np.max(lon) + pixel_radius
@@ -360,8 +367,11 @@ def _sample_patch_positions(
     sampled_pixels: list[np.ndarray] = []
     n_have = 0
     while n_have < n_random:
+        # Oversample, since most of the box is usually outside the footprint.
         batch = max(1024, 4 * (n_random - n_have))
         ra = rng.uniform(ra_min, ra_max, size=batch)
+        # Uniform in sin(dec), not in dec: sampling dec directly would pile
+        # points up towards the poles instead of spreading them evenly on sky.
         sin_dec = rng.uniform(
             np.sin(np.deg2rad(dec_min)),
             np.sin(np.deg2rad(dec_max)),
@@ -426,6 +436,8 @@ def _catalog_weights(
         and treecorr_patch_col in real_catalog
         and treecorr_patch_col in random_catalog
     ):
+        # Match within each patch separately, so a patch is never reweighted
+        # to look like the depth distribution of a different part of the sky.
         real_patch = real_catalog[treecorr_patch_col].to_numpy(int)
         random_patch = random_catalog[treecorr_patch_col].to_numpy(int)
         patches = np.intersect1d(np.unique(real_patch), np.unique(random_patch))
@@ -440,6 +452,8 @@ def _catalog_weights(
                 max_weight=max_weight,
                 min_real=min_real,
             )
+        # Randoms in a patch with no real objects have nothing to match
+        # against, so drop them rather than let them count unweighted.
         missing_random = ~np.isin(random_patch, patches)
         weights[missing_random] = 0.0
         return weights
@@ -493,6 +507,9 @@ def _pixel_weight_features(
                     f"random_weighting.depth requested missing column: {fluxerr_col}"
                 )
             fluxerr = catalog[fluxerr_col].to_numpy(float)
+            # Convert the flux error to an n-sigma limiting magnitude, which is
+            # the depth an object at that position was actually observed to.
+            # Non-positive errors give NaN here and are filtered out below.
             with np.errstate(divide="ignore", invalid="ignore"):
                 feature_data[f"depth_{band}"] = zero_point - 2.5 * np.log10(
                     depth_sigma * fluxerr
@@ -516,6 +533,9 @@ def _pixel_weight_features(
         finite &= np.isfinite(data[column].to_numpy(float))
     if not np.any(finite):
         return pd.DataFrame(index=pd.Index([], name="pixel"))
+    # Collapse to one median value per pixel: the feature describes a location
+    # on the sky, so randoms can look it up by pixel even though they have no
+    # photometry of their own.
     return data.loc[finite].groupby("pixel")[finite_cols].median()
 
 
@@ -581,6 +601,9 @@ def _match_feature_weights(
     real_fraction = real_counts / np.sum(real_counts)
     random_fraction = random_counts / np.sum(random_counts)
 
+    # Importance weights: a bin holding more of the real sample than of the
+    # randoms gets weight above one, and vice versa, so the weighted randoms
+    # end up with the same depth distribution as the real objects.
     ratio = np.zeros(max_id + 1, dtype=float)
     valid = random_fraction > 0
     ratio[valid] = real_fraction[valid] / random_fraction[valid]
@@ -590,6 +613,8 @@ def _match_feature_weights(
     if max_weight is not None:
         random_weights = np.clip(random_weights, 0.0, max_weight)
     if normalize:
+        # Rescale to mean one so reweighting changes the distribution but not
+        # the effective number of randoms.
         mean_weight = float(np.mean(random_weights))
         if mean_weight > 0 and np.isfinite(mean_weight):
             random_weights = random_weights / mean_weight
@@ -611,6 +636,11 @@ def _feature_bin_ids(
     if real_features.shape[1] != random_features.shape[1]:
         raise ValueError("Real and random feature dimensions do not match")
 
+    # Bin each feature separately, then combine the per-feature bin numbers
+    # into one integer id per object, mixed-radix style: `base` is the running
+    # product of the widths already consumed, so every combination of
+    # per-feature bins maps to a distinct id. That turns an N-dimensional
+    # histogram into a single bincount below.
     real_ids = np.zeros(len(real_features), dtype=np.int64)
     random_ids = np.zeros(len(random_features), dtype=np.int64)
     real_good = np.ones(len(real_features), dtype=bool)
@@ -629,6 +659,9 @@ def _feature_bin_ids(
             real_good[:] = False
             random_good[:] = False
             break
+        # Quantile edges come from the real sample only, so both sides are
+        # binned on the same scale and the bins are populated by construction.
+        # np.unique collapses duplicate edges from heavily tied values.
         edges = np.nanquantile(reference, np.linspace(0.0, 1.0, n_bins + 1))
         edges = np.unique(edges[np.isfinite(edges)])
         if len(edges) <= 1:
