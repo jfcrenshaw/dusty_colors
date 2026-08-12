@@ -39,6 +39,7 @@ from dusty_colors.selection import (
     select_samples_with_report,
     write_sample_outputs,
 )
+from dusty_colors.randoms import _catalog_weights, sample_weighting_config
 from dusty_colors.treecorr_stacker import TreeCorrStacker
 from astropy.cosmology import Planck18 as cosmo
 
@@ -1540,21 +1541,15 @@ class CatalogSampleSliceTest(unittest.TestCase):
         def fluxerr_from_depth(depth: float) -> float:
             return 10 ** ((31.4 - depth) / 2.5) / 5.0
 
-        stacker = TreeCorrStacker(
-            foreground=pd.DataFrame(),
-            background=pd.DataFrame(),
-            out_dir="unused",
-            colors=("g-r",),
-            random_weighting={
-                "depth": {
-                    "bands": ["g"],
-                    "fluxerr_template": "cmodel_fluxerr_{band}",
-                    "depth_sigma": 5,
-                },
-                "n_bins": 2,
-                "stratify_by_patch": False,
+        weighting = {
+            "depth": {
+                "bands": ["g"],
+                "fluxerr_template": "cmodel_fluxerr_{band}",
+                "depth_sigma": 5,
             },
-        )
+            "n_bins": 2,
+            "stratify_by_patch": False,
+        }
         real = pd.DataFrame(
             {
                 "pixel": [1, 1, 2, 2],
@@ -1568,11 +1563,13 @@ class CatalogSampleSliceTest(unittest.TestCase):
         )
         random = pd.DataFrame({"pixel": [1, 2, 2, 2]})
 
-        weights = stacker._random_catalog_weights(
+        weights = _catalog_weights(
             real,
             random,
-            stacker._random_weighting_config("foreground"),
+            sample_weighting_config(weighting, "foreground"),
             label="foreground",
+            colors=("g-r",),
+            treecorr_patch_col="_treecorr_patch",
         )
 
         np.testing.assert_allclose(weights, [2.0, 2.0 / 3.0, 2.0 / 3.0, 2.0 / 3.0])
