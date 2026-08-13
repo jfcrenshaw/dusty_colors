@@ -5,6 +5,11 @@ looks different close to foreground galaxies than far from them. A trend in
 photo-z or color with separation would mean the measured reddening signal has
 a selection component rather than being purely dust.
 
+This runs *during* the stack, not after it: the weights are TreeCorr pair
+weights, which only exist inside the estimator, and the counts are written into
+``stack_<mode>_diagnostics.npz``. Drawing them afterwards is a separate
+concern that belongs to :mod:`dusty_colors.postrun.plot_diagnostics`.
+
 The functions here work on plain arrays of per-object values, so they carry no
 notion of colors, observables, or stack modes. The caller decides what to
 histogram and what to name the result.

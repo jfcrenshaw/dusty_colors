@@ -198,7 +198,8 @@ All analyses are on by default.
 
 ```yaml
 postrun:
-  figures: true
+  stack_figures: true
+  diagnostic_figures: false
   dust_extinction_fit:
     radial_pivot_kpc: 20.0
     covariance: diagonal_errors
@@ -209,10 +210,14 @@ postrun:
 Settings nested inside `stack:` are still read as a fallback for configs written before this block existed, but settings there *are* hashed into the stack, so a change forces `--force-stack`.
 Prefer `postrun:`.
 
-### `figures`
+### `stack_figures`
 
 Writes, per mode, one square log-log jackknife-sample plot for the first configured color and one square log-log full-signal plot for every color.
-When the stack ran with `diagnostic_plots`, also writes pair-weighted photo-z and per-color radial distribution figures.
+
+### `diagnostic_figures`
+
+Writes pair-weighted photo-z and per-color radial distribution figures, one curve per radial bin, each normalised to unit area so bins with very different pair counts compare by shape.
+Needs `stack_<mode>_diagnostics.npz`, so it does nothing unless the stack ran with `diagnostic_plots` enabled.
 
 ### `dust_extinction_fit`
 
@@ -253,15 +258,36 @@ Writes `analysis_catalog_stats.{txt,json}` into the *sample* directory, since th
 
 ## Plotting from Python
 
-The stack plotting helpers are importable for manual use.
-They read the color order from the analysis YAML and apply the project Matplotlib style.
+The figure functions are importable for manual use, and read the color order from the analysis YAML and apply the project Matplotlib style.
+The `save_*` helpers accept a loaded stack, a stack directory, or the analysis config that produced it:
 
 ```python
-from dusty_colors.plotting import save_stack_figures
+from dusty_colors.postrun.plot_stacks import save_stack_figures
 
 save_stack_figures(
     "configs/analyses/dp1_default.yaml",
     "figures",
     mode="fcolors",
 )
+```
+
+The individual figures take a loaded stack and return a Matplotlib figure, so they can be tweaked in a notebook:
+
+```python
+from dusty_colors.results import load_stack_source
+from dusty_colors.postrun.plot_stacks import plot_color_signals
+from dusty_colors.postrun.plot_diagnostics import plot_radial_distributions
+
+results = load_stack_source("results/stacks/dp1_default", mode="fcolors")
+plot_color_signals(results)
+plot_radial_distributions(results, "photoz")
+plot_radial_distributions(results, "g-r")
+```
+
+Notebooks that plot anything else should call the style directly:
+
+```python
+from dusty_colors import get_root, use_matplotlib_style
+
+use_matplotlib_style()
 ```

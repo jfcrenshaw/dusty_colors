@@ -71,7 +71,7 @@ Radial bins, color choices, sample cuts, and column mappings are never passed as
 
 | Module | Responsibility |
 | --- | --- |
-| `paths.py` | `get_root()`, which locates the repository root by walking up to `pyproject.toml`. |
+| `utils.py` | `get_root()`, plus the Matplotlib style and the shared figure size. |
 | `config.py` | Load YAML, resolve the three-stage reference graph, parse array specs, compute stable config hashes. |
 | `pipeline.py` | Stage orchestration, manifest checks, force behaviour. |
 | `sources.py` | Load raw tables, apply per-source filters, join source tables. |
@@ -83,9 +83,8 @@ Radial bins, color choices, sample cuts, and column mappings are never passed as
 | `observables.py` | Flux-ratio and magnitude-color observable construction. |
 | `treecorr_stacker.py` | The TreeCorr estimator. |
 | `randoms.py` | Random catalogs inside the footprint, and depth-matched weights for them. |
-| `diagnostics.py` | Pair-weighted histograms of background properties by separation. |
+| `pair_histograms.py` | Pair-weighted histograms of background properties by separation, computed during the stack. |
 | `results.py` | `StackResults` and the loaders that read a finished stack back off disk. |
-| `plotting.py` | Figures, built on `results.py`. |
 | `postrun/` | Analyses that run automatically after a stack; see below. |
 
 `scripts/run_stack.py` is the single pipeline entry point.
@@ -98,11 +97,17 @@ Everything that consumes a finished stack — figures, fits, summary tables — 
 | Module | Responsibility |
 | --- | --- |
 | `postrun/base.py` | `PostRunContext`, the `@register` decorator, and the runner. |
-| `postrun/figures.py` | Runs the standard and diagnostic figures from `plotting.py`. |
+| `postrun/plot_stacks.py` | The science figures: color excess profiles and their jackknife. |
+| `postrun/plot_diagnostics.py` | Draws the histograms that `pair_histograms.py` computed during the stack. |
+| `postrun/plot_chromaticity.py` | Band-relative excesses against reference extinction curves. |
 | `postrun/dust_extinction_fit.py` | Fit an extinction law to the measured color excess profiles. |
 | `postrun/color_power_law_fit.py` | Fit a power law to a single color profile. |
-| `postrun/chromaticity.py` | Band-relative excesses against reference extinction curves. |
 | `postrun/analysis_stats.py` | Summary statistics for a completed analysis. |
+
+Figure modules are named `plot_*.py`, one per kind of figure.
+Each figure is a single linear function that makes its axes, pulls the arrays it needs out of the stack, draws, labels, and returns.
+That is deliberate: these functions are read and copied into notebooks far more often than they are called, so a reader should be able to follow one top to bottom without chasing helpers.
+Prefer inlining a short expression twice over introducing a helper used twice, and keep module-level constants to genuinely shared conventions such as `COLOR_STYLES`, which exists so a color-pair looks the same in every figure and in the paper.
 
 The stack stage calls `write_post_run_analyses` once; the registry decides what runs.
 Adding an analysis is two steps: a new module with a `@register("name")` function returning the paths it wrote, and one import line in `postrun/__init__.py`.

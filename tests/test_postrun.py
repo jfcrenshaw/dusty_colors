@@ -117,7 +117,8 @@ class RegistryTest(unittest.TestCase):
             names,
             [
                 "analysis_catalog_stats",
-                "figures",
+                "stack_figures",
+                "diagnostic_figures",
                 "dust_extinction_fit",
                 "color_power_law_fit",
                 "chromaticity",
@@ -169,9 +170,9 @@ class ContextOptionsTest(unittest.TestCase):
             root = Path(tmp)
             context = _build_context(
                 root,
-                {"postrun": {"figures": True, "chromaticity": None}},
+                {"postrun": {"stack_figures": True, "chromaticity": None}},
             )
-            self.assertEqual(context.options("figures"), {})
+            self.assertEqual(context.options("stack_figures"), {})
             self.assertEqual(context.options("chromaticity"), {})
             self.assertEqual(context.options("never_configured"), {})
 
@@ -182,13 +183,13 @@ class ContextOptionsTest(unittest.TestCase):
                 root,
                 {
                     "postrun": {
-                        "figures": False,
+                        "stack_figures": False,
                         "chromaticity": {"enabled": False},
                         "color_power_law_fit": {"radial_pivot_kpc": 20.0},
                     }
                 },
             )
-            self.assertFalse(context.enabled("figures"))
+            self.assertFalse(context.enabled("stack_figures"))
             self.assertFalse(context.enabled("chromaticity"))
             self.assertTrue(context.enabled("color_power_law_fit"))
             self.assertTrue(context.enabled("unmentioned"))
@@ -197,9 +198,9 @@ class ContextOptionsTest(unittest.TestCase):
     def test_non_mapping_option_block_is_rejected(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            context = _build_context(root, {"postrun": {"figures": ["oops"]}})
+            context = _build_context(root, {"postrun": {"stack_figures": ["oops"]}})
             with self.assertRaises(ValueError):
-                context.options("figures")
+                context.options("stack_figures")
 
 
 class ContextCacheTest(unittest.TestCase):
@@ -264,10 +265,10 @@ class RunnerTest(unittest.TestCase):
             calls.append(mode)
             return ()
 
-        analyses = (PostRunAnalysis(name="figures", func=ok),)
+        analyses = (PostRunAnalysis(name="stack_figures", func=ok),)
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
-            context = _build_context(root, {"postrun": {"figures": False}})
+            context = _build_context(root, {"postrun": {"stack_figures": False}})
             with unittest.mock.patch(
                 "dusty_colors.postrun.base.registered_analyses",
                 return_value=analyses,

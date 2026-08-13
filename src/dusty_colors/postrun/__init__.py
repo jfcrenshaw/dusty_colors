@@ -29,10 +29,11 @@ from .base import (
 # is the order the analyses run in. Kept explicit rather than auto-discovered so
 # that the order is obvious and mypy can see the modules.
 from . import analysis_stats  # noqa: F401,E402  isort:skip
-from . import figures  # noqa: F401,E402  isort:skip
+from . import plot_stacks  # noqa: F401,E402  isort:skip
+from . import plot_diagnostics  # noqa: F401,E402  isort:skip
 from . import dust_extinction_fit  # noqa: F401,E402  isort:skip
 from . import color_power_law_fit  # noqa: F401,E402  isort:skip
-from . import chromaticity  # noqa: F401,E402  isort:skip
+from . import plot_chromaticity  # noqa: F401,E402  isort:skip
 
 __all__ = [
     "PostRunAnalysis",

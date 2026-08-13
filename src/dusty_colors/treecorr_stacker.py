@@ -13,7 +13,11 @@ import treecorr
 import yaml
 from astropy.cosmology import Planck18 as cosmo
 
-from .diagnostics import ValuesAndMask, histogram_bin_edges, pair_weighted_histograms
+from .pair_histograms import (
+    ValuesAndMask,
+    histogram_bin_edges,
+    pair_weighted_histograms,
+)
 from .observables import build_observable, observable_column_names
 from .randoms import build_random_catalogs
 

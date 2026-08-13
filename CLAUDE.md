@@ -44,12 +44,17 @@ python scripts/run_stack.py configs/analyses/dp1_default.yaml [--force-{stack,sa
 - Science choices belong in YAML, never in command-line arguments or hardcoded constants.
 - Never count parent directories to find the repository root.
   Use `from dusty_colors import get_root`, optionally with `get_root(__file__)` when the result must not depend on the working directory.
-- Notebooks that plot must call `use_matplotlib_style()` from `dusty_colors.plotting`.
+- Notebooks that plot must call `use_matplotlib_style()` from `dusty_colors`.
   The style is not picked up implicitly, and `src/dusty_colors/matplotlibrc` is the only copy.
 - Do not put `backend` in `matplotlibrc`; it is appearance-only.
   `rc_file()` ignores the key anyway, and a script needing a specific backend should call `mpl.use(...)` itself.
 - Never overwrite raw photometry columns; cleaning adds derived columns instead.
 - Adding a survey means adding a catalog adapter, not touching the estimator.
+- **Write figure code flat.**
+  Each figure is one linear function: make the axes, pull out the arrays, draw, label, return.
+  Inline a short expression twice rather than adding a helper used twice, and only add a helper when it removes real duplication across several figures.
+  Module-level constants are for conventions shared by every figure, such as the per-color styles that keep a color-pair looking the same everywhere.
+  These functions get copied into notebooks, so they must read top to bottom without chasing indirection.
 
 ### What counts as non-obvious
 
@@ -82,7 +87,7 @@ Put the *what* in the docstring and keep inline comments for the *why*, so they 
 ## Current state
 
 A cleanup is largely complete; see [ARCHITECTURE.md](ARCHITECTURE.md) for the known rough edges.
-`treecorr_stacker.py` is still one large class at 1,448 lines, after random-catalog generation moved to `randoms.py` and the pair histograms to `diagnostics.py`.
+`treecorr_stacker.py` is still one large class at 1,448 lines, after random-catalog generation moved to `randoms.py` and the pair histograms to `pair_histograms.py`.
 What remains is mostly the estimator itself, so prefer adding new concerns as their own module rather than growing this class.
 
 Anything that consumes a finished stack goes in [src/dusty_colors/postrun/](src/dusty_colors/postrun/) as a registered analysis, never in the stacker.

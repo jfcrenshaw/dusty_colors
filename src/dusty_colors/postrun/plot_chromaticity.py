@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from ..plotting import use_matplotlib_style
 from ..results import StackResults
+from ..utils import use_matplotlib_style
 from .base import PostRunContext, register
 from .dust_extinction_fit import DEFAULT_FILTER_WAVELENGTHS_UM, _dust_law
 

@@ -18,7 +18,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from dusty_colors.postrun.chromaticity import (  # noqa: E402
+from dusty_colors.postrun.dust_extinction_fit import _dust_law  # noqa: E402
+from dusty_colors.postrun.plot_chromaticity import (  # noqa: E402
     ChromaticityConfig,
     _curve_coefficients,
     band_relative_chain,
@@ -27,7 +28,6 @@ from dusty_colors.postrun.chromaticity import (  # noqa: E402
     parse_chromaticity_options,
     save_stack_chromaticity_figure,
 )
-from dusty_colors.postrun.dust_extinction_fit import _dust_law  # noqa: E402
 from dusty_colors.results import StackResults  # noqa: E402
 
 BANDS = ("g", "r", "i", "z")
