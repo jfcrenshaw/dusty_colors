@@ -15,7 +15,6 @@ from ..observables import (
 )
 from .postage_stamps import build_projected_pair_table, pair_table_summary
 
-
 FG_REDDER_GROUP = "fg_redder_than_bg"
 BG_REDDER_GROUP = "bg_redder_than_fg"
 INVALID_GROUP = "invalid_or_tie"

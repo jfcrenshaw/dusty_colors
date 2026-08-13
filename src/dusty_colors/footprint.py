@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from astropy.coordinates import angular_separation
 import healpy as hp
 import numpy as np
 import pandas as pd
+from astropy.coordinates import angular_separation
 
 
 def assign_healpix_pixels(
@@ -82,10 +82,13 @@ def assign_jackknife_regions(
             sub["dec"].to_numpy(float) - center_dec,
             sub["ra"].to_numpy(float) - center_ra,
         )
-        local = np.digitize(
-            theta,
-            np.linspace(-np.pi, np.pi, regions_per_field + 1),
-        ) - 1
+        local = (
+            np.digitize(
+                theta,
+                np.linspace(-np.pi, np.pi, regions_per_field + 1),
+            )
+            - 1
+        )
         local = np.clip(local, 0, regions_per_field - 1)
         regions[np.where(use)[0]] = local + offset
         offset += regions_per_field

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 
 import numpy as np
 import pandas as pd
@@ -77,7 +77,9 @@ class ClaudsSmokeTest(unittest.TestCase):
             nir_catalog = pd.read_parquet(nir_catalog_dir / "catalog.parquet")
             nir_fg = pd.read_parquet(tmp_path / "sample_nir/foreground.parquet")
 
-            self.assertEqual(sorted(nir_catalog["field"].unique()), ["E-COSMOS", "XMM-LSS"])
+            self.assertEqual(
+                sorted(nir_catalog["field"].unique()), ["E-COSMOS", "XMM-LSS"]
+            )
             self.assertIn("mag_Yv", nir_catalog)
             self.assertIn("flux_Yv", nir_catalog)
             self.assertIn("mag_Ks", nir_catalog)
@@ -100,8 +102,7 @@ def _catalog_config(
         "sources": {
             "objects": {
                 "files": [
-                    {"path": field_paths[field], "field": field}
-                    for field in fields
+                    {"path": field_paths[field], "field": field} for field in fields
                 ],
                 "columns": [
                     "ID",

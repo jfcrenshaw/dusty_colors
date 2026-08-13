@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import html
 import json
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from astropy.cosmology import Planck18 as DEFAULT_COSMO
 import numpy as np
 import pandas as pd
+from astropy.cosmology import Planck18 as DEFAULT_COSMO
 from scipy.spatial import cKDTree
-
 
 ARCSEC_PER_RADIAN = 206264.80624709636
 DEFAULT_REVIEW_BANDS = ("r", "i")

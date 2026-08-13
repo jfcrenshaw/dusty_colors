@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
-import re
 
 import numpy as np
 import pandas as pd

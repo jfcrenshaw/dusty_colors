@@ -3,19 +3,19 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
 import os
-from pathlib import Path
 import sys
 import tempfile
 import uuid
+from dataclasses import dataclass
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from dusty_colors.enrichments import KcorrectEnrichment
+from dusty_colors.enrichments import KcorrectEnrichment  # noqa: E402
 
 BANDS = ("u", "g", "r", "i", "z", "y")
 DEFAULT_BANDS = ("g", "r", "i", "z")

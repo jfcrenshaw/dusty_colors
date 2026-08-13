@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
-from pathlib import Path
 import shutil
+from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 from urllib.error import HTTPError
 from urllib.request import urlopen
@@ -115,8 +115,9 @@ def download_file(
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_name(f"{path.name}.part")
     try:
-        with opener(url) as response, tmp_path.open("wb") as handle:  # type: ignore[attr-defined]
-            shutil.copyfileobj(response, handle)
+        with opener(url) as response:  # type: ignore[attr-defined]
+            with tmp_path.open("wb") as handle:
+                shutil.copyfileobj(response, handle)
     except HTTPError as exc:
         if tmp_path.exists():
             tmp_path.unlink()

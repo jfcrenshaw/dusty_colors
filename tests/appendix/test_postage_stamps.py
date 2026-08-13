@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import tempfile
-from pathlib import Path
 import unittest
+from pathlib import Path
 
-from astropy.cosmology import Planck18 as cosmo
 import numpy as np
 import pandas as pd
+from astropy.cosmology import Planck18 as cosmo
 
 from dusty_colors.appendix.postage_stamps import (
     ARCSEC_PER_RADIAN,

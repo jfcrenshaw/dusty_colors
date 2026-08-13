@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import io
-from pathlib import Path
 import sys
-from tempfile import TemporaryDirectory
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,12 +45,7 @@ class DownloadClaudsTest(unittest.TestCase):
             self.assertEqual(results[0].status, "downloaded")
             self.assertEqual(
                 calls,
-                [
-                    (
-                        f"{download_clauds.BASE_URL}/"
-                        "header_sextractor_Picouet.txt"
-                    )
-                ],
+                [f"{download_clauds.BASE_URL}/" "header_sextractor_Picouet.txt"],
             )
 
             reused = download_clauds.download_all(

@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-from astropy.io import fits
-from contextlib import redirect_stdout
 import importlib.util
 import io
-import numpy as np
-from pathlib import Path
 import sys
-from tempfile import TemporaryDirectory
 import types
 import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
+
+import numpy as np
+from astropy.io import fits
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "build_kcorrect_broad.py"

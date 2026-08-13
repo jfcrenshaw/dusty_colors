@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import importlib.util
 import json
-from pathlib import Path
 import sys
-from tempfile import TemporaryDirectory
 import types
 import unittest
 import warnings
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
+from astropy.cosmology import Planck18 as cosmo
 
 from dusty_colors.catalogs import (
     ClaudsSExtractorCatalogAdapter,
@@ -34,14 +35,13 @@ from dusty_colors.observables import (
     flux_ratio_observable,
     magnitude_color_observable,
 )
+from dusty_colors.randoms import _catalog_weights, sample_weighting_config
 from dusty_colors.selection import (
     select_samples,
     select_samples_with_report,
     write_sample_outputs,
 )
-from dusty_colors.randoms import _catalog_weights, sample_weighting_config
 from dusty_colors.treecorr_stacker import TreeCorrStacker
-from astropy.cosmology import Planck18 as cosmo
 
 SKLEARN_AVAILABLE = importlib.util.find_spec("sklearn") is not None
 SCIPY_AVAILABLE = importlib.util.find_spec("scipy") is not None

@@ -193,17 +193,10 @@ def _read_source_files(
     optional_columns: list[str],
 ) -> pd.DataFrame:
     injected_columns = {
-        str(key)
-        for file_config in file_configs
-        for key in file_config
-        if key != "path"
+        str(key) for file_config in file_configs for key in file_config if key != "path"
     }
-    required_to_read = [
-        col for col in required_columns if col not in injected_columns
-    ]
-    optional_to_read = [
-        col for col in optional_columns if col not in injected_columns
-    ]
+    required_to_read = [col for col in required_columns if col not in injected_columns]
+    optional_to_read = [col for col in optional_columns if col not in injected_columns]
 
     tables = []
     for file_config in file_configs:

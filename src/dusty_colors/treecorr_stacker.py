@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields as dataclass_fields
+from dataclasses import dataclass, field
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import Any, Literal
 
@@ -13,12 +14,12 @@ import treecorr
 import yaml
 from astropy.cosmology import Planck18 as cosmo
 
+from .observables import build_observable, observable_column_names
 from .pair_histograms import (
     ValuesAndMask,
     histogram_bin_edges,
     pair_weighted_histograms,
 )
-from .observables import build_observable, observable_column_names
 from .randoms import build_random_catalogs
 
 ColorMode = Literal["fcolors", "mcolors"]
