@@ -81,9 +81,13 @@ Put the *what* in the docstring and keep inline comments for the *why*, so they 
 
 ## Current state
 
-A cleanup is largely complete; see [CLEANUP_PLAN.md](CLEANUP_PLAN.md) for what was done and [ARCHITECTURE.md](ARCHITECTURE.md) for the known rough edges.
+A cleanup is largely complete; see [ARCHITECTURE.md](ARCHITECTURE.md) for the known rough edges.
 `treecorr_stacker.py` is still one large class at 1,448 lines, after random-catalog generation moved to `randoms.py` and the pair histograms to `diagnostics.py`.
 What remains is mostly the estimator itself, so prefer adding new concerns as their own module rather than growing this class.
+
+Anything that consumes a finished stack goes in [src/dusty_colors/postrun/](src/dusty_colors/postrun/) as a registered analysis, never in the stacker.
+Adding one is a new module with a `@register("name")` function plus one import line in `postrun/__init__.py`.
+Its options live under `postrun:` in the analysis YAML, which is excluded from the stack config hash so retuning a fit does not force a re-stack.
 
 `tests/test_stacker_characterization.py` pins all 284 stack output arrays bit-exactly.
 Run it after any change to the estimator.

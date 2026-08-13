@@ -138,6 +138,8 @@ TreeCorr is the only stacker, so there is no `engine` option.
 
 Options are `colors`, `modes` (`fcolors` and/or `mcolors`), `r_bin_edges`, `reference_annulus`, `snr_max`, `bin_slop`, `num_threads`, `jackknife`, `patch_col`, `cross_patch_weight`, `random_correction`, `random_multiplier`, `random_seed`, `random_nside`, `random_weighting`, `flipped_correction`, `diagnostic_plots`, `diagnostic_photoz_bins`, and `diagnostic_color_bins`.
 
+Settings for fits and figures belong in [`postrun`](#postrun), not here.
+
 `r_bin_edges` takes an explicit list or a declarative spec.
 The loader deliberately does not evaluate Python or NumPy expressions from YAML strings.
 
@@ -173,7 +175,81 @@ Each configured mode writes `stack_<mode>.npz`, containing the science signal, j
 
 With `diagnostic_plots` enabled, `stack_<mode>_diagnostics.npz` holds pair-weighted background photo-z and magnitude-color histograms per radial bin.
 
-Every run also writes `config_resolved.yaml` and refreshes standard figures in `results/stacks/<analysis_id>/`: one square log-log jackknife-sample plot for the first configured color, and one square log-log full-signal plot for every color, per mode.
+Every run also writes `config_resolved.yaml` and refreshes the post-run analysis products described below.
+
+## `postrun`
+
+Analyses that run automatically after a stack completes, reading it back off disk.
+
+This block is **not** part of the stack config hash.
+Editing it therefore leaves the stack valid, and an ordinary run regenerates the derived products without recomputing anything:
+
+```bash
+python scripts/run_stack.py configs/analyses/dp1_default.yaml
+# catalog: skip / sample: skip / stack: skip, then the fits and figures are rewritten
+```
+
+Post-run analyses rerun on every invocation, including when every stage skips, so no flag is needed to pick up a change here.
+`--only-postrun` is available when you want a guarantee that no stage can run: it refuses rather than building a missing catalog or sample, which is useful while iterating on a figure.
+
+Each key names one registered analysis.
+Set it to `false` (or `{enabled: false}`) to switch the analysis off, to `true` to run it with defaults, or to a mapping of its options.
+All analyses are on by default.
+
+```yaml
+postrun:
+  figures: true
+  dust_extinction_fit:
+    radial_pivot_kpc: 20.0
+    covariance: diagonal_errors
+    fixed_rv: 3.1
+  color_power_law_fit: false
+```
+
+Settings nested inside `stack:` are still read as a fallback for configs written before this block existed, but settings there *are* hashed into the stack, so a change forces `--force-stack`.
+Prefer `postrun:`.
+
+### `figures`
+
+Writes, per mode, one square log-log jackknife-sample plot for the first configured color and one square log-log full-signal plot for every color.
+When the stack ran with `diagnostic_plots`, also writes pair-weighted photo-z and per-color radial distribution figures.
+
+### `dust_extinction_fit`
+
+Fits `E(b1-b2, r) = A_V(pivot) * (r/pivot)^alpha * [(A_b1/A_V) - (A_b2/A_V)]` and writes `dust_extinction_fit_<mode>.txt`.
+
+Options are `colors`, `law` (any name in `dust_extinction.parameter_averages` or `.averages`, such as `F99`, `CCM89`, `G23`, `G03_SMCBar`), `radial_pivot_kpc`, `covariance` (`auto`, `full_jackknife`, `per_color_covariance`, `diagonal_errors`), `foreground_redshift`, `wavelengths_um`, `fixed_rv`, `amplitude_bounds`, `alpha_bounds`, `rv_bounds`, `initial_amplitude`, `initial_alpha`, and `initial_rv`.
+
+The fit de-redshifts the filter wavelengths by `1 + z_fg` before evaluating the law, using the median foreground `z_phot` when available and the midpoint of `selection.foreground_z` otherwise.
+Declines to run when the stack lacks any of the requested colors.
+
+### `color_power_law_fit`
+
+Fits `E(color) = A (r/pivot)^alpha` independently per color and writes `color_power_law_fits_<mode>.txt`.
+Options are `colors`, `radial_pivot_kpc`, and the fit bounds.
+
+### `chromaticity`
+
+Writes `<analysis_id>_<mode>_extinction_curve_comparison.{png,pdf}`: one panel per radial bin showing band-relative color excesses against reference extinction curves, with the chromatic shape of each law held fixed so the figure tests the law rather than fitting it.
+
+Options are `bands` (in wavelength order, default `[g, r, i, z]`), `reference_band`, `point_bands`, `radial_pivot_kpc`, `fit_bin_indices`, `laws`, `wavelengths_um`, `extension`, and `dpi`.
+
+```yaml
+postrun:
+  chromaticity:
+    radial_pivot_kpc: 20.0
+    fit_bin_indices: [0, 1, 2]
+    laws:
+      - {name: F99, rv: 3.1, short: MW, label: "F99 MW $R_V=3.1$", color: "#1f5bd8"}
+      - {name: G03_SMCBar, short: SMC, label: "G03 SMC Bar", color: "#2e7d32"}
+```
+
+Band-relative excesses are built by walking the chain of adjacent measured colors, so this needs every adjacent color between `reference_band` and each of `point_bands`; it declines to run otherwise.
+Errors are propagated through the jackknife samples rather than added in quadrature, because adjacent colors share background objects.
+
+### `analysis_catalog_stats`
+
+Writes `analysis_catalog_stats.{txt,json}` into the *sample* directory, since the statistics describe the sample rather than one stack mode.
 
 ## Plotting from Python
 

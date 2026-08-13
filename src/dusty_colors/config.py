@@ -89,7 +89,7 @@ def load_resolved_config(
         id=analysis_id,
         path=analysis_path,
         data=analysis_data,
-        config_hash=stable_hash(analysis_data),
+        config_hash=stable_hash(hashable_analysis_data(analysis_data)),
     )
     return ResolvedConfig(
         root=root_path,
@@ -97,6 +97,24 @@ def load_resolved_config(
         sample=sample,
         catalog=catalog,
     )
+
+
+def hashable_analysis_data(analysis_data: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Return the part of an analysis config that identifies its stack outputs.
+
+    The ``postrun`` block configures analyses that run *after* a stack and read
+    it back off disk, so it cannot change the stack itself. Hashing it would
+    mean that retuning a fit parameter invalidates the manifest and demands a
+    full re-stack to regenerate a text report, so it is excluded here.
+
+    The early return is not an optimisation. It is the guarantee that adding
+    this exclusion cannot invalidate a stack already on disk: configs without a
+    ``postrun`` key hash through the identical code path they always did.
+    """
+
+    if "postrun" not in analysis_data:
+        return analysis_data
+    return {key: value for key, value in analysis_data.items() if key != "postrun"}
 
 
 def load_yaml(path: str | Path) -> dict[str, Any]:

@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import json
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
 
-from .config import load_resolved_config
-from .pipeline import build_stage_specs, check_manifest, expected_manifest
+from ..config import load_resolved_config
+from ..pipeline import build_stage_specs, check_manifest, expected_manifest
+from .base import PostRunContext, register
 
 FULL_SKY_DEG2 = 4.0 * np.pi * (180.0 / np.pi) ** 2
 
@@ -352,6 +353,22 @@ def _healpix_npix(nside: int) -> int:
 
 def _healpix_pixel_area_deg2(nside: int) -> float:
     return FULL_SKY_DEG2 / _healpix_npix(nside)
+
+
+@register("analysis_catalog_stats", per_mode=False)
+def _stage(context: PostRunContext) -> tuple[Path, ...]:
+    """Write catalog summary statistics for the analysis.
+
+    Reported per sample rather than per stack mode, so the outputs land beside
+    the samples they describe and are shared by every analysis using them.
+    """
+
+    return save_analysis_catalog_stats(
+        context.resolved.analysis.path,
+        context.sample_dir,
+        root=context.root,
+        require_current=True,
+    )
 
 
 def _require_columns(

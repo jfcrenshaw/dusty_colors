@@ -20,5 +20,7 @@ stack:
   random_multiplier: 5
   random_seed: 42
   jackknife: true
+
+postrun:
   dust_extinction_fit:
     fixed_rv: 3.1

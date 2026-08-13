@@ -17,7 +17,14 @@ stack:
     n_bins: 3
   random_seed: 42
   jackknife: true
+
+# Analyses run after the stack. Not hashed into the stack manifest, so these can
+# be retuned and rerun without recomputing the stack.
+postrun:
   dust_extinction_fit:
     radial_pivot_kpc: 20.0
     covariance: diagonal_errors
     fixed_rv: 3.1
+  chromaticity:
+    radial_pivot_kpc: 20.0
+    fit_bin_indices: [0, 1, 2]

@@ -12,7 +12,8 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.stats import chi2 as chi2_distribution
 
-from .results import StackResults, load_stack_source
+from ..results import StackResults, load_stack_source
+from .base import PostRunContext, register
 
 
 @dataclass(frozen=True)
@@ -45,10 +46,15 @@ def save_stack_color_power_law_fits(
     mode: str | None = None,
     root: str | Path | None = None,
     stack_config: Mapping[str, Any] | None = None,
+    options: Mapping[str, Any] | None = None,
 ) -> Path | None:
-    """Fit every available stack color and write a compact text report."""
+    """Fit every available stack color and write a compact text report.
 
-    config = _power_law_config(stack_config)
+    Pass either ``stack_config`` to have the block extracted here, or the
+    already-resolved ``options`` block, which is what the post-run stage does.
+    """
+
+    config = _power_law_config(stack_config) if options is None else options
     if not bool(config.get("enabled", True)):
         return None
 
@@ -257,6 +263,18 @@ def _model(
 def _parameter_covariance(jacobian: np.ndarray) -> np.ndarray:
     fisher = jacobian.T @ jacobian
     return np.linalg.pinv(fisher)
+
+
+@register("color_power_law_fit")
+def _stage(context: PostRunContext, mode: str) -> tuple[Path, ...]:
+    """Fit a power law to every available color of one stack mode."""
+
+    path = save_stack_color_power_law_fits(
+        context.results(mode),
+        context.stack_dir,
+        options=context.options("color_power_law_fit"),
+    )
+    return () if path is None else (path,)
 
 
 __all__ = [

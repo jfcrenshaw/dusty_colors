@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
-from tempfile import TemporaryDirectory
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 import pandas as pd
@@ -14,7 +14,10 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from dusty_colors.analysis_stats import save_analysis_catalog_stats, stats_for_analysis
+from dusty_colors.postrun.analysis_stats import (  # noqa: E402
+    save_analysis_catalog_stats,
+    stats_for_analysis,
+)
 
 
 def _write_yaml(path: Path, data: dict) -> None:

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 import sys
-from tempfile import TemporaryDirectory
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 
@@ -12,7 +12,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from dusty_colors.color_power_law_fit import (  # noqa: E402
+from dusty_colors.postrun.color_power_law_fit import (  # noqa: E402
     fit_color_power_law,
     save_stack_color_power_law_fits,
 )

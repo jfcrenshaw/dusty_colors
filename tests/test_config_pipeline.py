@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from pathlib import Path
 import os
 import sys
+import unittest
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-import unittest
 
 import numpy as np
 import pandas as pd
@@ -29,8 +29,10 @@ from dusty_colors.pipeline import (  # noqa: E402
     ForceOptions,
     ManifestMismatchError,
     StageHandlers,
+    StageOutputError,
     _wrap_domain_handler,
     run_pipeline,
+    run_post_run_only,
 )
 
 
@@ -205,6 +207,56 @@ class ConfigPipelineTest(unittest.TestCase):
                 [stage.action for stage in forced.stages],
                 ["skip", "run", "run"],
             )
+
+    def test_only_postrun_regenerates_products_without_running_stages(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            analysis_path = _write_graph(root)
+            run_pipeline(analysis_path, root=root, handlers=_handlers())
+            stack_dir = root / "results/stacks/analysis_default"
+            all_colors_plot = stack_dir / "analysis_default_fcolors_all_colors.pdf"
+            all_colors_plot.unlink()
+
+            # No handlers at all: if any stage tried to run, this would fail.
+            outputs = run_post_run_only(analysis_path, root=root)
+
+            self.assertTrue(all_colors_plot.exists())
+            self.assertIn(all_colors_plot.resolve(), {p.resolve() for p in outputs})
+
+    def test_only_postrun_accepts_an_edited_postrun_block(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            analysis_path = _write_graph(root)
+            run_pipeline(analysis_path, root=root, handlers=_handlers())
+
+            # Editing postrun must not invalidate the stack it reads.
+            analysis = load_yaml(analysis_path)
+            analysis["postrun"] = {"color_power_law_fit": {"radial_pivot_kpc": 30.0}}
+            _write_yaml(analysis_path, analysis)
+
+            outputs = run_post_run_only(analysis_path, root=root)
+            self.assertTrue(outputs)
+
+    def test_only_postrun_rejects_a_stale_stack(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            analysis_path = _write_graph(root)
+            run_pipeline(analysis_path, root=root, handlers=_handlers())
+
+            # A stack setting, unlike a postrun setting, does invalidate.
+            analysis = load_yaml(analysis_path)
+            analysis["stack"]["reference_annulus"] = [3.0, 5.0]
+            _write_yaml(analysis_path, analysis)
+
+            with self.assertRaises(ManifestMismatchError):
+                run_post_run_only(analysis_path, root=root)
+
+    def test_only_postrun_reports_missing_stack_outputs(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            analysis_path = _write_graph(root)
+            with self.assertRaises(StageOutputError):
+                run_post_run_only(analysis_path, root=root)
 
     def test_stack_wrapper_prefers_sample_footprint_when_present(self) -> None:
         with TemporaryDirectory() as tmp:

@@ -86,13 +86,37 @@ Radial bins, color choices, sample cuts, and column mappings are never passed as
 | `diagnostics.py` | Pair-weighted histograms of background properties by separation. |
 | `results.py` | `StackResults` and the loaders that read a finished stack back off disk. |
 | `plotting.py` | Figures, built on `results.py`. |
-| `dust_extinction_fit.py` | Fit an extinction law to the measured color excess profiles. |
-| `color_power_law_fit.py` | Fit a power law to a single color profile. |
-| `analysis_stats.py` | Summary statistics for a completed analysis. |
-| `postrun.py` | Post-run analyses invoked automatically after a stack. |
+| `postrun/` | Analyses that run automatically after a stack; see below. |
 
 `scripts/run_stack.py` is the single pipeline entry point.
 The other scripts are one-off data acquisition and model-building utilities, not part of the pipeline.
+
+## Post-run analyses
+
+Everything that consumes a finished stack — figures, fits, summary tables — is a *post-run analysis* living in `src/dusty_colors/postrun/`.
+
+| Module | Responsibility |
+| --- | --- |
+| `postrun/base.py` | `PostRunContext`, the `@register` decorator, and the runner. |
+| `postrun/figures.py` | Runs the standard and diagnostic figures from `plotting.py`. |
+| `postrun/dust_extinction_fit.py` | Fit an extinction law to the measured color excess profiles. |
+| `postrun/color_power_law_fit.py` | Fit a power law to a single color profile. |
+| `postrun/chromaticity.py` | Band-relative excesses against reference extinction curves. |
+| `postrun/analysis_stats.py` | Summary statistics for a completed analysis. |
+
+The stack stage calls `write_post_run_analyses` once; the registry decides what runs.
+Adding an analysis is two steps: a new module with a `@register("name")` function returning the paths it wrote, and one import line in `postrun/__init__.py`.
+The runner supplies the shared context, resolves the config block, and owns the error policy — a failing analysis warns and is skipped rather than discarding a stack that may have taken hours.
+
+`PostRunContext` caches the loaded stack per mode and the representative foreground redshift, so several analyses reading the same arrays cost one read rather than one each.
+
+Options come from the `postrun` block of the analysis YAML, which is **deliberately excluded from the stack config hash**.
+Post-run analyses read a stack back off disk and cannot change it, so hashing their settings would mean retuning a fit parameter invalidated the manifest and demanded a full re-stack to regenerate a text report.
+Excluding the block is safe for stacks already on disk: configs without a `postrun` key hash through the identical code path they always did.
+Post-run analyses rerun on every invocation, including the skip path, so editing this block and running normally is enough to regenerate the products.
+`--only-postrun` additionally refuses to run any stage, for when a figure tweak must not be able to trigger a rebuild.
+
+The older convention of nesting these settings inside `stack:` is still read as a fallback, but settings there *are* hashed, so prefer `postrun:`.
 
 ### Maintenance tiers
 
@@ -122,10 +146,11 @@ Two color modes exist.
 Recorded honestly so they are not mistaken for intentional design.
 
 - `treecorr_stacker.py` is still a single 1,448-line class, now holding the estimator and its TreeCorr plumbing after random-catalog generation and diagnostics moved out.
-  Its remaining bulk is the estimator itself, which is closer to an appropriate size; see `CLEANUP_PLAN.md`.
+  Its remaining bulk is the estimator itself, which is closer to an appropriate size.
 - `selection.py` is 1,044 lines, of which roughly 120 are Markdown and JSON report rendering.
   Splitting that out was tried and reverted: the rendering is reached through a single call, but the report *construction* it sits next to is called throughout the cuts, so the separation bought less than the extra module cost.
-- `_parameter_covariance` (3 lines) is identical in both fit modules, and each has its own 8-line `_profile_errors`.
+- The three-line pseudo-inverse that turns a Jacobian into a parameter covariance is repeated in each of the three fitting modules under `postrun/`, and the two `_profile_errors` helpers each have their own copy.
   The `_profile_errors` pair are deliberately different: `dust_extinction_fit` sanitises non-finite errors inside the helper because they feed a covariance block before any filtering, while `color_power_law_fit` filters at the call site.
+- `chromaticity.py` fits the same radial power law as `color_power_law_fit.py` but with the chromatic shape held fixed, so the two share a model without sharing code.
 - `pipeline.py` dispatches stages by dynamic string import, which is more indirection than three fixed stages need.
 - `prefer_observable_columns` is a stack option that no config sets, still wired through `treecorr_stacker.py`.

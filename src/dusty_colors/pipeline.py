@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, TypeAlias
-import warnings
 
 import yaml
 
@@ -164,7 +164,6 @@ def run_pipeline(
         if check.action == "skip" and not force_stage:
             if kind == "stack":
                 write_resolved_config(spec.output_dir, resolved)
-                write_stack_figures(spec, resolved)
                 write_post_run_analyses(spec, resolved)
             results.append(_stage_result(spec, "skip", check.reason))
             continue
@@ -301,7 +300,6 @@ def run_stage(
 
     if spec.kind == "stack":
         write_resolved_config(spec.output_dir, resolved)
-        write_stack_figures(spec, resolved)
         write_post_run_analyses(spec, resolved)
     write_manifest(spec.output_dir, expected_manifest(spec, resolved))
 
@@ -429,62 +427,32 @@ def write_resolved_config(output_dir: str | Path, resolved: ResolvedConfig) -> N
     write_yaml(Path(output_dir) / "config_resolved.yaml", resolved.to_dict())
 
 
-def write_stack_figures(spec: StageSpec, resolved: ResolvedConfig) -> tuple[Path, ...]:
-    """Write standard stack figures next to stack outputs when possible."""
-
-    if spec.kind != "stack":
-        return ()
-
-    from .plotting import save_stack_diagnostic_figures, save_stack_figures
-
-    paths: list[Path] = []
-    for mode in stack_modes(resolved.analysis):
-        try:
-            paths.extend(
-                save_stack_figures(
-                    spec.output_dir,
-                    spec.output_dir,
-                    mode=mode,
-                    root=resolved.root,
-                )
-            )
-            paths.extend(
-                save_stack_diagnostic_figures(
-                    spec.output_dir,
-                    spec.output_dir,
-                    mode=mode,
-                    root=resolved.root,
-                )
-            )
-        except (OSError, KeyError, ValueError) as exc:
-            warnings.warn(
-                f"Could not write stack figures for {spec.config.id} {mode}: {exc}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-    return tuple(paths)
-
-
 def write_post_run_analyses(
     spec: StageSpec,
     resolved: ResolvedConfig,
 ) -> tuple[Path, ...]:
-    """Write non-plot analysis products next to stack outputs when possible."""
+    """Run every registered post-run analysis against a completed stack.
+
+    Figures, fits, and summary tables are all registered analyses, so this is
+    the single hook the stack stage needs; see :mod:`dusty_colors.postrun`.
+    """
 
     if spec.kind != "stack":
         return ()
 
-    from .postrun import run_post_run_analyses
+    # Imported lazily because postrun.analysis_stats imports this module.
+    from .postrun import PostRunContext, run_post_run_analyses
 
     input_dirs = input_dirs_for(spec.kind, resolved)
     try:
-        return run_post_run_analyses(
-            resolved,
+        context = PostRunContext(
+            resolved=resolved,
             stack_dir=spec.output_dir,
             sample_dir=input_dirs["sample"],
             catalog_dir=input_dirs["catalog"],
             modes=stack_modes(resolved.analysis),
         )
+        return run_post_run_analyses(context)
     except (OSError, KeyError, ValueError, ModuleNotFoundError) as exc:
         warnings.warn(
             f"Could not write post-run analyses for {spec.config.id}: {exc}",
@@ -492,6 +460,47 @@ def write_post_run_analyses(
             stacklevel=2,
         )
         return ()
+
+
+def run_post_run_only(
+    config_path: str | Path,
+    *,
+    root: str | Path | None = None,
+) -> tuple[Path, ...]:
+    """Run the post-run analyses for an existing stack without running a stage.
+
+    Not the only way to refresh these products: :func:`run_pipeline` runs them on
+    its skip path too, so an ordinary run already picks up an edited ``postrun``
+    block. What this adds is the guarantee that no stage can run, so a figure
+    tweak cannot quietly trigger an expensive rebuild.
+
+    The manifest is still checked. Writing a fresh report from stale arrays is
+    exactly the failure the manifests exist to prevent.
+    """
+
+    root_path = Path.cwd() if root is None else Path(root)
+    root_path = root_path.resolve()
+    resolved = load_resolved_config(config_path, root=root_path)
+    spec = build_stage_specs(resolved, root=root_path)["stack"]
+
+    missing = [path for path in spec.expected_outputs if not path.exists()]
+    if missing:
+        raise StageOutputError(
+            f"No stack outputs to analyse in {spec.output_dir}: "
+            f"{', '.join(path.name for path in missing)}. "
+            f"Run the pipeline without --only-postrun first."
+        )
+
+    check = check_manifest(
+        spec.output_dir,
+        spec.expected_outputs,
+        expected_manifest(spec, resolved),
+    )
+    if check.action == "mismatch":
+        raise ManifestMismatchError(spec, check.reason)
+
+    write_resolved_config(spec.output_dir, resolved)
+    return write_post_run_analyses(spec, resolved)
 
 
 def force_flag_for(kind: PipelineStageKind) -> str:

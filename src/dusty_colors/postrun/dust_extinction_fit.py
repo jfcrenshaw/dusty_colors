@@ -13,8 +13,9 @@ import numpy as np
 from scipy.optimize import least_squares
 from scipy.stats import chi2 as chi2_distribution
 
-from .observables import parse_color
-from .results import StackResults, load_stack_source
+from ..observables import parse_color
+from ..results import StackResults, load_stack_source
+from .base import PostRunContext, register
 
 DEFAULT_FIT_COLORS = ("g-r", "r-i", "i-z")
 COVARIANCE_MODES = (
@@ -112,16 +113,28 @@ class DustExtinctionFitResult:
 def parse_dust_extinction_fit_config(
     stack_config: Mapping[str, Any] | None,
 ) -> DustExtinctionFitConfig:
-    """Parse ``stack.dust_extinction_fit`` with conservative defaults."""
+    """Parse ``dust_extinction_fit`` out of an enclosing config block."""
 
     stack_config = stack_config or {}
-    raw = stack_config.get("dust_extinction_fit", {})
+    return parse_dust_extinction_fit_options(stack_config.get("dust_extinction_fit"))
+
+
+def parse_dust_extinction_fit_options(
+    raw: Any,
+) -> DustExtinctionFitConfig:
+    """Parse an already-extracted ``dust_extinction_fit`` block.
+
+    Split out from :func:`parse_dust_extinction_fit_config` because the post-run
+    runner has already resolved the block from either ``postrun`` or ``stack``
+    and should not have to re-wrap it in a fake enclosing mapping.
+    """
+
     if raw is False:
         return DustExtinctionFitConfig(enabled=False)
     if raw is True or raw is None:
         raw = {}
     if not isinstance(raw, Mapping):
-        raise ValueError("stack.dust_extinction_fit must be a mapping or boolean")
+        raise ValueError("dust_extinction_fit must be a mapping or boolean")
 
     if bool(raw.get("enabled", True)) is False:
         return DustExtinctionFitConfig(enabled=False)
@@ -152,6 +165,7 @@ def save_stack_dust_extinction_fit(
     mode: str | None = None,
     root: str | Path | None = None,
     stack_config: Mapping[str, Any] | None = None,
+    config: DustExtinctionFitConfig | None = None,
     foreground_redshift: float | None = None,
     foreground_redshift_source: str = "provided",
 ) -> Path | None:
@@ -160,9 +174,13 @@ def save_stack_dust_extinction_fit(
     Returns ``None`` when the selected stack mode does not contain all required
     colors. Other fit failures are raised so the post-run orchestrator can
     decide whether to warn or fail.
+
+    Pass either ``stack_config`` to have the block parsed here, or an
+    already-parsed ``config``, which is what the registered post-run stage does.
     """
 
-    config = parse_dust_extinction_fit_config(stack_config)
+    if config is None:
+        config = parse_dust_extinction_fit_config(stack_config)
     if not config.enabled:
         return None
 
@@ -847,6 +865,23 @@ def _dust_law(name: str, rv: float) -> Any:
     return law_class()
 
 
+@register("dust_extinction_fit")
+def _stage(context: PostRunContext, mode: str) -> tuple[Path, ...]:
+    """Fit the extinction law to one stack mode and write its report."""
+
+    redshift, redshift_source = context.foreground_redshift
+    path = save_stack_dust_extinction_fit(
+        context.results(mode),
+        context.stack_dir,
+        config=parse_dust_extinction_fit_options(
+            context.options("dust_extinction_fit")
+        ),
+        foreground_redshift=redshift,
+        foreground_redshift_source=redshift_source,
+    )
+    return () if path is None else (path,)
+
+
 __all__ = [
     "DEFAULT_FILTER_WAVELENGTHS_UM",
     "DEFAULT_FIT_COLORS",
@@ -860,6 +895,7 @@ __all__ = [
     "fit_dust_extinction_law",
     "format_dust_extinction_fit",
     "parse_dust_extinction_fit_config",
+    "parse_dust_extinction_fit_options",
     "save_stack_dust_extinction_fit",
     "stack_fit_data",
 ]

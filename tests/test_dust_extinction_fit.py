@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import sys
+import unittest
 from importlib.util import find_spec
 from pathlib import Path
-import sys
 from tempfile import TemporaryDirectory
-import unittest
 
 import numpy as np
 
@@ -13,7 +13,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from dusty_colors.dust_extinction_fit import (  # noqa: E402
+from dusty_colors.postrun.dust_extinction_fit import (  # noqa: E402
     DEFAULT_FILTER_WAVELENGTHS_UM,
     DustExtinctionFitConfig,
     color_excess_per_av,
@@ -23,7 +23,6 @@ from dusty_colors.dust_extinction_fit import (  # noqa: E402
     save_stack_dust_extinction_fit,
 )
 from dusty_colors.results import StackResults  # noqa: E402
-
 
 HAS_DUST_EXTINCTION = find_spec("dust_extinction") is not None
 
