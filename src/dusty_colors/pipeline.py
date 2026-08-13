@@ -329,7 +329,15 @@ def stage_handler(
         if injected is not None:
             return injected
 
-    module_name, candidates = _handler_candidates(kind)
+    handler_modules: dict[str, tuple[str, tuple[str, ...]]] = {
+        "catalog": ("dusty_colors.catalogs", ("prepare_catalog",)),
+        "sample": ("dusty_colors.selection", ("prepare_sample",)),
+        "stack": ("dusty_colors.treecorr_stacker", ("run_treecorr_stack",)),
+    }
+    if kind not in handler_modules:
+        raise PipelineError(f"Unknown stage kind: {kind}")
+    module_name, candidates = handler_modules[kind]
+
     try:
         module = import_module(module_name)
     except ModuleNotFoundError as exc:
@@ -366,7 +374,7 @@ def expected_manifest(spec: StageSpec, resolved: ResolvedConfig) -> dict[str, An
         "outputs": [
             format_path(path, spec.output_dir) for path in spec.expected_outputs
         ],
-        "created_at": _utc_now(),
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
 
 
@@ -513,16 +521,6 @@ def force_flag_for(kind: PipelineStageKind) -> str:
     raise PipelineError(f"Unknown stage kind: {kind}")
 
 
-def _handler_candidates(kind: PipelineStageKind) -> tuple[str, tuple[str, ...]]:
-    if kind == "catalog":
-        return "dusty_colors.catalogs", ("prepare_catalog",)
-    if kind == "sample":
-        return "dusty_colors.selection", ("prepare_sample",)
-    if kind == "stack":
-        return "dusty_colors.treecorr_stacker", ("run_treecorr_stack",)
-    raise PipelineError(f"Unknown stage kind: {kind}")
-
-
 def _wrap_domain_handler(
     kind: PipelineStageKind,
     handler: Callable[..., Any],
@@ -534,13 +532,19 @@ def _wrap_domain_handler(
 
         def run_sample(context: StageContext) -> None:
             catalog_config = context.resolved.catalog.data
+            footprint = catalog_config.get("footprint", {})
+            nside = (
+                int(footprint["nside"])
+                if isinstance(footprint, Mapping) and "nside" in footprint
+                else None
+            )
             handler(
                 context.input_dirs["catalog"] / "catalog.parquet",
                 context.config.data,
                 context.output_dir,
                 bands=catalog_config.get("bands"),
                 photometry=catalog_config.get("photometry"),
-                nside=_catalog_nside(catalog_config),
+                nside=nside,
             )
 
         return run_sample
@@ -567,13 +571,6 @@ def _wrap_domain_handler(
     raise PipelineError(f"Unknown stage kind: {kind}")
 
 
-def _catalog_nside(catalog_config: Mapping[str, Any]) -> int | None:
-    footprint = catalog_config.get("footprint", {})
-    if isinstance(footprint, Mapping) and "nside" in footprint:
-        return int(footprint["nside"])
-    return None
-
-
 def _stage_result(
     spec: StageSpec,
     action: StageAction,
@@ -587,7 +584,3 @@ def _stage_result(
         output_dir=spec.output_dir,
         stage_hash=spec.stage_hash,
     )
-
-
-def _utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

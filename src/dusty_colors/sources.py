@@ -33,11 +33,17 @@ def assemble_sources(config: Mapping[str, Any]) -> pd.DataFrame:
         join_config = source_config.get("join")
         if not isinstance(join_config, Mapping):
             raise ValueError(f"Non-primary source '{name}' must define a join")
+
+        # The join key must survive any column filtering on the right table. An
+        # index-style join names no key, in which case there is nothing to keep.
+        join_key = join_config.get("on", join_config.get("right_key"))
         assembled = join_source(
             assembled,
             load_source_table(
                 source_config,
-                ensure_columns=_join_right_columns(join_config),
+                ensure_columns=(
+                    [] if join_key is None else _join_key_columns(join_key)
+                ),
             ),
             join_config,
             source_name=str(name),
@@ -296,13 +302,6 @@ def _join_kwargs(config: Mapping[str, Any], source_name: str) -> dict[str, Any]:
     kwargs["_right_keys"] = _join_key_columns(right_key)
     kwargs["_drop_right_key"] = bool(config.get("drop_right_key", True))
     return kwargs
-
-
-def _join_right_columns(config: Mapping[str, Any]) -> list[str]:
-    if "on" in config:
-        return _join_key_columns(config["on"])
-    right_key = config.get("right_key")
-    return [] if right_key is None else _join_key_columns(right_key)
 
 
 def _join_key_columns(value: Any) -> list[str]:

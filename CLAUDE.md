@@ -50,11 +50,12 @@ python scripts/run_stack.py configs/analyses/dp1_default.yaml [--force-{stack,sa
   `rc_file()` ignores the key anyway, and a script needing a specific backend should call `mpl.use(...)` itself.
 - Never overwrite raw photometry columns; cleaning adds derived columns instead.
 - Adding a survey means adding a catalog adapter, not touching the estimator.
-- **Write figure code flat.**
-  Each figure is one linear function: make the axes, pull out the arrays, draw, label, return.
-  Inline a short expression twice rather than adding a helper used twice, and only add a helper when it removes real duplication across several figures.
-  Module-level constants are for conventions shared by every figure, such as the per-color styles that keep a color-pair looking the same everywhere.
-  These functions get copied into notebooks, so they must read top to bottom without chasing indirection.
+- **Do not fragment code into tiny helpers.**
+  A helper earns its name by removing real duplication across several call sites, or by organising a large thematically unified block.
+  A three-line function called once does neither; it just makes the reader jump.
+  This applies everywhere, and doubly to figures: each figure is one linear function that makes the axes, pulls out the arrays, draws, labels, and returns, because these get copied into notebooks and must read top to bottom.
+  Module-level constants are for conventions shared across figures, such as the per-color styles that keep a color-pair looking the same everywhere.
+  Symmetric pairs are worth keeping even when small — `_has_flux`/`_has_mag` in `observables.py` read better together than either would inlined.
 
 ### What counts as non-obvious
 

@@ -64,12 +64,14 @@ def save_stack_color_power_law_fits(
         else load_stack_source(source, mode=mode, root=root)
     )
     pivot_kpc = float(config.get("radial_pivot_kpc", 100.0))
-    colors = _configured_colors(config, results.colors)
+    colors = config.get("colors", results.colors)
+    if isinstance(colors, str):
+        colors = (colors,)
 
     fits = [
-        fit_color_power_law(results, color, pivot_kpc=pivot_kpc, config=config)
+        fit_color_power_law(results, str(color), pivot_kpc=pivot_kpc, config=config)
         for color in colors
-        if _has_color_profile(results, color)
+        if f"{color}_bin_centers" in results.arrays and f"{color}_avg" in results.arrays
     ]
     fits = [fit for fit in fits if fit is not None]
     if not fits:
@@ -117,7 +119,8 @@ def fit_color_power_law(
     p0 = _initial_parameters(radius, signal, pivot_kpc, bounds)
 
     def residual(params: np.ndarray) -> np.ndarray:
-        return (signal - _model(radius, params[0], params[1], pivot_kpc)) / error
+        amplitude, alpha = params
+        return (signal - amplitude * (radius / pivot_kpc) ** alpha) / error
 
     optimized = least_squares(
         residual,
@@ -128,7 +131,7 @@ def fit_color_power_law(
         gtol=1.0e-10,
         max_nfev=1000,
     )
-    covariance = _parameter_covariance(optimized.jac)
+    covariance = np.linalg.pinv(optimized.jac.T @ optimized.jac)
     errors = np.sqrt(np.clip(np.diag(covariance), 0.0, np.inf))
     chi2 = float(np.sum(residual(optimized.x) ** 2))
     dof = max(len(signal) - 2, 0)
@@ -197,20 +200,6 @@ def _power_law_config(stack_config: Mapping[str, Any] | None) -> Mapping[str, An
     return raw
 
 
-def _configured_colors(
-    config: Mapping[str, Any],
-    default_colors: Sequence[str],
-) -> tuple[str, ...]:
-    colors = config.get("colors", default_colors)
-    if isinstance(colors, str):
-        return (colors,)
-    return tuple(str(color) for color in colors)
-
-
-def _has_color_profile(results: StackResults, color: str) -> bool:
-    return f"{color}_bin_centers" in results.arrays and f"{color}_avg" in results.arrays
-
-
 def _profile_errors(results: StackResults, color: str, size: int) -> np.ndarray:
     for key in (f"{color}_jackknife_err", f"{color}_err", f"{color}_analytic_err"):
         if key not in results.arrays:
@@ -249,20 +238,6 @@ def _initial_parameters(
     amplitude = float(np.clip(amplitude, lower[0], upper[0]))
     alpha = float(np.clip(-1.0, lower[1], upper[1]))
     return np.array([amplitude, alpha], dtype=float)
-
-
-def _model(
-    radius: np.ndarray,
-    amplitude: float,
-    alpha: float,
-    pivot_kpc: float,
-) -> np.ndarray:
-    return amplitude * (radius / pivot_kpc) ** alpha
-
-
-def _parameter_covariance(jacobian: np.ndarray) -> np.ndarray:
-    fisher = jacobian.T @ jacobian
-    return np.linalg.pinv(fisher)
 
 
 @register("color_power_law_fit")

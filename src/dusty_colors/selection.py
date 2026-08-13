@@ -79,10 +79,6 @@ class SampleSelector:
             photometry=self.photometry,
         )
 
-    def _apply_shared_selection(self, catalog: pd.DataFrame) -> pd.DataFrame:
-        mask = SharedSelectionCuts(catalog, self.selection).mask()
-        return catalog.loc[mask].reset_index(drop=True)
-
     def _assign_jackknife(self, catalog: pd.DataFrame) -> pd.DataFrame:
         jackknife = _enabled_option(self.config, "jackknife")
         if jackknife is None:
@@ -91,9 +87,6 @@ class SampleSelector:
 
     def _footprint(self, catalog: pd.DataFrame) -> pd.DataFrame | None:
         return _sample_footprint(catalog, self.config.get("footprint"))
-
-    def _sample(self, catalog: pd.DataFrame, sample: str) -> pd.DataFrame:
-        return self._sample_with_stages(catalog, sample)[0]
 
     def _sample_with_stages(
         self,

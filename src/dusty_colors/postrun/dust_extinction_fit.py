@@ -139,8 +139,12 @@ def parse_dust_extinction_fit_options(
     if bool(raw.get("enabled", True)) is False:
         return DustExtinctionFitConfig(enabled=False)
 
+    colors = raw.get("colors", DEFAULT_FIT_COLORS)
+    if isinstance(colors, str):
+        colors = (colors,)
+
     return DustExtinctionFitConfig(
-        colors=_tuple(raw.get("colors", DEFAULT_FIT_COLORS)),
+        colors=tuple(str(color) for color in colors),
         law=str(raw.get("law", "F99")),
         radial_pivot_kpc=float(raw.get("radial_pivot_kpc", 100.0)),
         foreground_redshift=_optional_float(raw.get("foreground_redshift")),
@@ -279,7 +283,7 @@ def fit_dust_extinction_law(
         max_nfev=2000,
     )
 
-    parameter_covariance = _parameter_covariance(optimized.jac)
+    parameter_covariance = np.linalg.pinv(optimized.jac.T @ optimized.jac)
     parameter_errors = np.sqrt(np.clip(np.diag(parameter_covariance), 0.0, np.inf))
     amplitude, alpha, rv = _fit_parameter_values(optimized.x, fit_config)
     model = dust_color_excess_model(
@@ -382,8 +386,13 @@ def stack_fit_data(
     finite = np.isfinite(radius_vector) & np.isfinite(signal_vector)
 
     covariance_method = "diagonal_errors"
-    has_full_jackknife = len(sample_blocks) == len(selected_colors) and _same_rows(
-        sample_blocks
+    # Every color must contribute the same patches, and at least two of them,
+    # for a joint jackknife covariance to be meaningful.
+    patch_counts = {block.shape[0] for block in sample_blocks}
+    has_full_jackknife = (
+        len(sample_blocks) == len(selected_colors)
+        and len(patch_counts) == 1
+        and next(iter(patch_counts), 0) >= 2
     )
     has_per_color_covariance = len(covariance_blocks) == len(selected_colors)
     if covariance_mode in {"auto", "full_jackknife"} and has_full_jackknife:
@@ -531,16 +540,20 @@ def band_extinction_ratios(
 ) -> dict[str, float]:
     """Evaluate ``A_lambda / A_V`` at dust-rest-frame band wavelengths."""
 
+    import astropy.units as u
+
     law_model = _dust_law(law, rv)
     bands = tuple(str(band) for band in wavelengths_um)
     wavelengths = np.array([float(wavelengths_um[band]) for band in bands], dtype=float)
     if np.any(wavelengths <= 0):
         raise ValueError("Filter effective wavelengths must be positive")
 
+    # The dust sits at the foreground redshift, so blueshift the observed filter
+    # wavelengths into the dust frame before evaluating the law.
     rest_wavelengths = wavelengths / (1.0 + float(foreground_redshift))
     x_inverse_micron = 1.0 / rest_wavelengths
     values = np.asarray(
-        law_model(_inverse_micron_quantity(x_inverse_micron)),
+        law_model(x_inverse_micron / u.micron),
         dtype=float,
     )
     if values.shape != x_inverse_micron.shape:
@@ -583,7 +596,11 @@ def format_dust_extinction_fit(fit: DustExtinctionFitResult) -> str:
             f"  amplitude_Av_at_pivot_mag: {fit.amplitude_av_mag:.10g} "
             f"+/- {errors[0]:.3g}",
             alpha_line,
-            _rv_parameter_line(fit),
+            (
+                f"  R_V: {fit.rv:.10g} (fixed)"
+                if fit.rv_fixed
+                else f"  R_V: {fit.rv:.10g} +/- {fit.parameter_errors[2]:.3g}"
+            ),
             "",
             "goodness_of_fit:",
             f"  chi2: {fit.chi2:.10g}",
@@ -634,26 +651,6 @@ def _has_required_colors(results: StackResults, colors: Sequence[str]) -> bool:
         f"{color}_bin_centers" in results.arrays and f"{color}_avg" in results.arrays
         for color in colors
     )
-
-
-def _inverse_micron_quantity(values: np.ndarray) -> Any:
-    try:
-        import astropy.units as u
-    except ModuleNotFoundError:
-        return values
-    return values / u.micron
-
-
-def _rv_parameter_line(fit: DustExtinctionFitResult) -> str:
-    if fit.rv_fixed:
-        return f"  R_V: {fit.rv:.10g} (fixed)"
-    return f"  R_V: {fit.rv:.10g} +/- {fit.parameter_errors[2]:.3g}"
-
-
-def _tuple(value: Any) -> tuple[str, ...]:
-    if isinstance(value, str):
-        return (value,)
-    return tuple(str(item) for item in value)
 
 
 def _optional_float(value: Any) -> float | None:
@@ -713,11 +710,6 @@ def _profile_errors(results: StackResults, color: str, size: int) -> np.ndarray:
     return np.full(size, np.nan)
 
 
-def _same_rows(blocks: Sequence[np.ndarray]) -> bool:
-    rows = {block.shape[0] for block in blocks}
-    return len(rows) == 1 and next(iter(rows)) >= 2
-
-
 def _jackknife_covariance(samples: np.ndarray) -> np.ndarray:
     mean = np.mean(samples, axis=0)
     centered = samples - mean
@@ -773,11 +765,6 @@ def _covariance_whitener(covariance: np.ndarray) -> tuple[Any, int]:
         return transform @ residual
 
     return whiten, int(np.count_nonzero(keep))
-
-
-def _parameter_covariance(jacobian: np.ndarray) -> np.ndarray:
-    fisher = jacobian.T @ jacobian
-    return np.linalg.pinv(fisher)
 
 
 def _fit_bounds(config: DustExtinctionFitConfig) -> tuple[np.ndarray, np.ndarray]:

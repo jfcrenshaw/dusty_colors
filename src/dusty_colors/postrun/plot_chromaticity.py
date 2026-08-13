@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import numpy as np
 
@@ -23,9 +23,6 @@ from ..results import StackResults
 from ..utils import use_matplotlib_style
 from .base import PostRunContext, register
 from .dust_extinction_fit import DEFAULT_FILTER_WAVELENGTHS_UM, _dust_law
-
-if TYPE_CHECKING:
-    from matplotlib.axes import Axes
 
 DEFAULT_BANDS = ("g", "r", "i", "z")
 DEFAULT_REFERENCE_BAND = "r"
@@ -319,16 +316,21 @@ def save_stack_chromaticity_figure(
     import matplotlib.pyplot as plt
 
     config = config or ChromaticityConfig()
-    if not config.enabled or not _has_required_colors(results, config):
+    needed = {
+        f"{color}_{suffix}"
+        for band in config.point_bands
+        for color, _ in band_relative_chain(config.bands, config.reference_band, band)
+        for suffix in ("avg", "jackknife_samples")
+    }
+    if not config.enabled or not needed <= results.arrays.keys():
         return ()
 
     redshift = 0.0 if foreground_redshift is None else float(foreground_redshift)
     use_matplotlib_style()
 
     values, errors = band_relative_points(results, config)
-    radii = np.asarray(
-        results.require(f"{_first_color(config)}_bin_centers"), dtype=float
-    )
+    first_color = f"{config.bands[0]}-{config.bands[1]}"
+    radii = np.asarray(results.require(f"{first_color}_bin_centers"), dtype=float)
 
     wavelengths = config.wavelengths_um
     lambda_ref = wavelengths[config.reference_band]
@@ -342,30 +344,31 @@ def save_stack_chromaticity_figure(
     )
     x_grid = lambda_grid / (1.0 + redshift)
 
+    # One (spec, grid coefficients, fit) triple per law being compared. The
+    # chromatic shape is fixed by the law, so only the amplitude and slope fit.
     curves = []
     for spec in config.laws:
         law = _dust_law(str(spec["name"]), float(spec.get("rv", 3.1)))
-        point_coefficients = _curve_coefficients(
-            law,
-            [wavelengths[band] for band in config.point_bands],
-            lambda_ref=lambda_ref,
-            redshift=redshift,
-        )
         curves.append(
-            {
-                "spec": spec,
-                "grid_coefficients": _curve_coefficients(
+            (
+                spec,
+                _curve_coefficients(
                     law, lambda_grid, lambda_ref=lambda_ref, redshift=redshift
                 ),
-                "fit": fit_radial_power_law(
+                fit_radial_power_law(
                     radii,
                     values,
                     errors,
-                    point_coefficients,
+                    _curve_coefficients(
+                        law,
+                        [wavelengths[band] for band in config.point_bands],
+                        lambda_ref=lambda_ref,
+                        redshift=redshift,
+                    ),
                     pivot_kpc=config.radial_pivot_kpc,
                     fit_bin_indices=config.fit_bin_indices,
                 ),
-            }
+            )
         )
 
     fig, axes = plt.subplots(
@@ -376,28 +379,47 @@ def save_stack_chromaticity_figure(
         constrained_layout=False,
     )
     axes = np.atleast_1d(axes)
-    bin_labels = _bin_labels(radii, radial_bin_edges)
+
+    edges = None if radial_bin_edges is None else np.asarray(radial_bin_edges, float)
+    if edges is not None and len(edges) == len(radii) + 1:
+        bin_labels = [
+            rf"${edges[i]:.0f} < R_p < {edges[i + 1]:.0f}\,\mathrm{{kpc}}$"
+            for i in range(len(radii))
+        ]
+    else:
+        bin_labels = [rf"$R_p \simeq {r:.0f}\,\mathrm{{kpc}}$" for r in radii]
 
     for index, ax in enumerate(axes):
         ax.axhline(0.0, **ZERO_LINE_KWARGS)
         plotted = []
-        for curve in curves:
-            fit = curve["fit"]
+        for spec, coefficients, fit in curves:
             av = fit.amplitude * (radii[index] / config.radial_pivot_kpc) ** fit.alpha
-            model = av * curve["grid_coefficients"]
+            model = av * coefficients
             plotted.append(model)
             ax.plot(
                 x_grid,
                 model,
-                color=curve["spec"].get("color"),
-                ls=curve["spec"].get("linestyle", "-"),
+                color=spec.get("color"),
+                ls=spec.get("linestyle", "-"),
                 lw=LINEWIDTH,
-                label=curve["spec"].get("label", curve["spec"]["name"]),
+                label=spec.get("label", spec["name"]),
             )
         ax.errorbar(x_points, values[index], yerr=errors[index], **DATA_KWARGS)
         ax.plot(lambda_ref / (1.0 + redshift), 0.0, **REFERENCE_MARKER_KWARGS)
 
-        _set_y_limits(ax, values[index], errors[index], plotted)
+        # Pad the limits around the data, the curves, and the zero line together.
+        stacked = np.concatenate(
+            [
+                values[index] - errors[index],
+                values[index] + errors[index],
+                *plotted,
+                [0.0],
+            ]
+        )
+        finite = stacked[np.isfinite(stacked)]
+        ymin, ymax = float(finite.min()), float(finite.max())
+        pad = max(0.12 * (ymax - ymin), 0.0008)
+        ax.set_ylim(ymin - pad, ymax + pad)
         ax.set_xlim(x_grid.min(), x_grid.max())
         ax.text(
             *BIN_LABEL_XY,
@@ -405,9 +427,25 @@ def save_stack_chromaticity_figure(
             transform=ax.transAxes,
             **BIN_LABEL_STYLE,
         )
+
         if index == 0:
-            _draw_fit_summary(ax, curves)
-        _add_color_excess_axis(ax)
+            for text_index, (spec, _, fit) in enumerate(curves):
+                reduced = fit.chi2 / fit.dof if fit.dof else float("nan")
+                ax.text(
+                    FIT_TEXT_XY[0],
+                    FIT_TEXT_XY[1] - FIT_TEXT_DY * text_index,
+                    rf"{spec.get('short', spec['name'])}: $A={fit.amplitude:.4f}$, "
+                    rf"$\alpha={fit.alpha:.2f}$, $\chi^2_\nu={reduced:.2f}$",
+                    transform=ax.transAxes,
+                    color=spec.get("color"),
+                    **FIT_TEXT_STYLE,
+                )
+
+        # Mirror the y axis on the right, where the same numbers read as the
+        # measured color excess rather than as relative extinction.
+        right = ax.secondary_yaxis("right", functions=(lambda y: y, lambda y: y))
+        right.minorticks_on()
+        right.tick_params(axis="y", which="both", direction="in")
         ax.minorticks_on()
         ax.tick_params(axis="both", which="both", direction="in", top=True)
 
@@ -420,9 +458,10 @@ def save_stack_chromaticity_figure(
     fig.supxlabel(XLABEL, y=0.04)
     fig.supylabel(YLABEL, x=0.055)
     fig.text(0.985, 0.5, RIGHT_YLABEL, va="center", ha="center", rotation=-90)
+    # Escape underscores so analysis ids do not become mathtext subscripts.
+    title = f"{results.stack_dir.name} {results.mode}".replace("_", r"\_")
     fig.suptitle(
-        f"{_escape(results.stack_dir.name)} {_escape(results.mode)} "
-        f"band-relative extinction curve comparison",
+        f"{title} band-relative extinction curve comparison",
         y=0.985,
         fontsize=11,
     )
@@ -438,20 +477,6 @@ def save_stack_chromaticity_figure(
         paths.append(path)
     plt.close(fig)
     return tuple(paths)
-
-
-def _has_required_colors(results: StackResults, config: ChromaticityConfig) -> bool:
-    for band in config.point_bands:
-        for color, _ in band_relative_chain(config.bands, config.reference_band, band):
-            if f"{color}_avg" not in results.arrays:
-                return False
-            if f"{color}_jackknife_samples" not in results.arrays:
-                return False
-    return True
-
-
-def _first_color(config: ChromaticityConfig) -> str:
-    return f"{config.bands[0]}-{config.bands[1]}"
 
 
 def _curve_coefficients(
@@ -473,60 +498,6 @@ def _curve_coefficients(
     lambda_ref_rest = float(lambda_ref) / (1.0 + redshift)
     ratios = np.asarray(law((1.0 / lambda_rest) * u.micron**-1), dtype=float)
     return ratios - float(law((1.0 / lambda_ref_rest) * u.micron**-1))
-
-
-def _bin_labels(
-    radii: np.ndarray,
-    radial_bin_edges: Sequence[float] | None,
-) -> list[str]:
-    edges = None if radial_bin_edges is None else np.asarray(radial_bin_edges, float)
-    if edges is None or len(edges) != len(radii) + 1:
-        return [rf"$R_p \simeq {radius:.0f}\,\mathrm{{kpc}}$" for radius in radii]
-    return [
-        rf"${edges[i]:.0f} < R_p < {edges[i + 1]:.0f}\,\mathrm{{kpc}}$"
-        for i in range(len(radii))
-    ]
-
-
-def _draw_fit_summary(ax: "Axes", curves: Sequence[Mapping[str, Any]]) -> None:
-    for text_index, curve in enumerate(curves):
-        fit: RadialPowerLawFit = curve["fit"]
-        spec = curve["spec"]
-        reduced = fit.chi2 / fit.dof if fit.dof else float("nan")
-        ax.text(
-            FIT_TEXT_XY[0],
-            FIT_TEXT_XY[1] - FIT_TEXT_DY * text_index,
-            rf"{spec.get('short', spec['name'])}: $A={fit.amplitude:.4f}$, "
-            rf"$\alpha={fit.alpha:.2f}$, $\chi^2_\nu={reduced:.2f}$",
-            transform=ax.transAxes,
-            color=spec.get("color"),
-            **FIT_TEXT_STYLE,
-        )
-
-
-def _add_color_excess_axis(ax: "Axes") -> None:
-    right = ax.secondary_yaxis("right", functions=(lambda y: y, lambda y: y))
-    right.minorticks_on()
-    right.tick_params(axis="y", which="both", direction="in")
-
-
-def _set_y_limits(
-    ax: "Axes",
-    values: np.ndarray,
-    errors: np.ndarray,
-    curves: Sequence[np.ndarray],
-) -> None:
-    stacked = np.concatenate([values - errors, values + errors, *curves, [0.0]])
-    finite = stacked[np.isfinite(stacked)]
-    ymin, ymax = float(finite.min()), float(finite.max())
-    pad = max(0.12 * (ymax - ymin), 0.0008)
-    ax.set_ylim(ymin - pad, ymax + pad)
-
-
-def _escape(value: str) -> str:
-    """Escape underscores so analysis ids do not become mathtext subscripts."""
-
-    return value.replace("_", r"\_")
 
 
 def _str_tuple(value: Any) -> tuple[str, ...]:

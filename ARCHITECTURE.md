@@ -154,8 +154,11 @@ Recorded honestly so they are not mistaken for intentional design.
   Its remaining bulk is the estimator itself, which is closer to an appropriate size.
 - `selection.py` is 1,044 lines, of which roughly 120 are Markdown and JSON report rendering.
   Splitting that out was tried and reverted: the rendering is reached through a single call, but the report *construction* it sits next to is called throughout the cuts, so the separation bought less than the extra module cost.
-- The three-line pseudo-inverse that turns a Jacobian into a parameter covariance is repeated in each of the three fitting modules under `postrun/`, and the two `_profile_errors` helpers each have their own copy.
+- The one-line pseudo-inverse that turns a Jacobian into a parameter covariance is now written out in each of the three fitting modules under `postrun/`, and the two `_profile_errors` helpers each have their own copy.
   The `_profile_errors` pair are deliberately different: `dust_extinction_fit` sanitises non-finite errors inside the helper because they feed a covariance block before any filtering, while `color_power_law_fit` filters at the call site.
-- `chromaticity.py` fits the same radial power law as `color_power_law_fit.py` but with the chromatic shape held fixed, so the two share a model without sharing code.
+- `plot_chromaticity.py` fits the same radial power law as `color_power_law_fit.py` but with the chromatic shape held fixed, so the two share a model without sharing code.
+- The stack filename convention (`stack_<mode>.npz` and its `_provenance` and `_diagnostics` companions) is spelled out independently in `treecorr_stacker.py`, `pipeline.py`, `results.py`, and `postrun/plot_stacks.py`.
+  Renaming it means changing four places.
 - `pipeline.py` dispatches stages by dynamic string import, which is more indirection than three fixed stages need.
+  Each stage kind also carries a tuple of candidate handler names, but every kind has exactly one, so the surrounding loop is unused flexibility.
 - `prefer_observable_columns` is a stack option that no config sets, still wired through `treecorr_stacker.py`.

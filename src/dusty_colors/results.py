@@ -131,11 +131,18 @@ def load_stack_results(
 
     selected_mode = _resolve_mode(stack_path, mode, configured_modes)
     arrays = _read_stack_npz(stack_path / f"stack_{selected_mode}.npz")
-    diagnostics = _read_optional_stack_npz(
-        _stack_diagnostic_file(stack_path, selected_mode)
-    )
+
+    # Diagnostics are optional: the stack only writes them when configured to.
+    diagnostic_path = _stack_diagnostic_file(stack_path, selected_mode)
+    diagnostics = _read_stack_npz(diagnostic_path) if diagnostic_path.exists() else {}
+
     if not configured_colors:
-        configured_colors = _infer_colors(arrays)
+        # Fall back to whichever colors have a radial profile in the file.
+        configured_colors = tuple(
+            key.removesuffix("_bin_centers")
+            for key in arrays
+            if key.endswith("_bin_centers")
+        )
     if not configured_colors:
         raise ValueError(f"Could not infer stack colors from {stack_path}")
 
@@ -154,12 +161,6 @@ def _read_stack_npz(path: Path) -> dict[str, np.ndarray]:
         raise FileNotFoundError(path)
     with np.load(path) as data:
         return {key: np.asarray(data[key]) for key in data.files}
-
-
-def _read_optional_stack_npz(path: Path) -> dict[str, np.ndarray]:
-    if not path.exists():
-        return {}
-    return _read_stack_npz(path)
 
 
 def _stack_diagnostic_file(stack_dir: Path, mode: str) -> Path:
@@ -218,8 +219,3 @@ def _stack_colors(stack_config: Mapping[str, Any]) -> tuple[str, ...]:
     if not isinstance(colors, Sequence) or isinstance(colors, str):
         return ()
     return tuple(str(color) for color in colors)
-
-
-def _infer_colors(arrays: Mapping[str, np.ndarray]) -> tuple[str, ...]:
-    suffix = "_bin_centers"
-    return tuple(key[: -len(suffix)] for key in arrays if key.endswith(suffix))

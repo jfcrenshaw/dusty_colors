@@ -312,7 +312,10 @@ class RubinDP1CatalogAdapter(CatalogAdapter):
         if "stellar_mass_log" in source:
             out["stellar_mass_log"] = source["stellar_mass_log"]
         if "stellar_mass" in source:
-            out["stellar_mass_log"] = _to_log_mass(source["stellar_mass"])
+            # Non-positive masses are missing data, not real values.
+            mass = source["stellar_mass"].astype(float)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                out["stellar_mass_log"] = np.where(mass > 0, np.log10(mass), np.nan)
 
         for band in bands:
             if photometry in (None, "flux"):
@@ -608,9 +611,3 @@ def _catalog_bands(config: Mapping[str, Any]) -> list[str]:
             unique.append(band)
             seen.add(band)
     return unique
-
-
-def _to_log_mass(value: pd.Series) -> pd.Series:
-    mass = value.astype(float)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(mass > 0, np.log10(mass), np.nan)

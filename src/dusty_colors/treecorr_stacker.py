@@ -164,7 +164,6 @@ class TreeCorrStacker:
         self._random_foreground_weight: np.ndarray | None = None
         self._random_background_weight: np.ndarray | None = None
         self._treecorr_patch_col = "_treecorr_patch"
-        self._diagnostic_cache: dict[ColorMode, dict[str, np.ndarray]] = {}
 
     @classmethod
     def from_sample_dir(
@@ -566,7 +565,7 @@ class TreeCorrStacker:
             source = self._background_catalog(
                 good, k=value[good], w=None if weight is None else weight[good]
             )
-            corr = self._nk(radial_bin)
+            corr = treecorr.NKCorrelation(**self._corr_kwargs(radial_bin))
             corr.process(
                 (
                     self._random_foreground_position_catalog()
@@ -586,7 +585,7 @@ class TreeCorrStacker:
             )
 
         pair_weight = np.ones(np.sum(good)) if weight is None else weight[good]
-        denominator = self._nn(radial_bin)
+        denominator = treecorr.NNCorrelation(**self._corr_kwargs(radial_bin))
         denominator.process(
             self._foreground_catalog(good, w=pair_weight),
             (
@@ -600,7 +599,7 @@ class TreeCorrStacker:
         if denominator.weight[0] == 0:
             return np.nan, 0.0, denominator.npairs[0], np.nan, ()
 
-        numerator = self._nn(radial_bin)
+        numerator = treecorr.NNCorrelation(**self._corr_kwargs(radial_bin))
         numerator.process(
             self._foreground_catalog(good, w=pair_weight * value[good]),
             (
@@ -645,7 +644,7 @@ class TreeCorrStacker:
             source = self._background_catalog(
                 good, k=value[good], w=None if weight is None else weight[good]
             )
-            corr = self._nk_bins(radial_bins)
+            corr = treecorr.NKCorrelation(**self._corr_kwargs_bins(radial_bins))
             corr.process(
                 (
                     self._random_foreground_position_catalog()
@@ -665,7 +664,7 @@ class TreeCorrStacker:
             )
 
         pair_weight = np.ones(np.sum(good)) if weight is None else weight[good]
-        denominator = self._nn_bins(radial_bins)
+        denominator = treecorr.NNCorrelation(**self._corr_kwargs_bins(radial_bins))
         denominator.process(
             self._foreground_catalog(good, w=pair_weight),
             (
@@ -677,7 +676,7 @@ class TreeCorrStacker:
             num_threads=self.num_threads,
         )
 
-        numerator = self._nn_bins(radial_bins)
+        numerator = treecorr.NNCorrelation(**self._corr_kwargs_bins(radial_bins))
         numerator.process(
             self._foreground_catalog(good, w=pair_weight * value[good]),
             (
@@ -838,7 +837,7 @@ class TreeCorrStacker:
             return np.array(getattr(profile, "ref_r_perp", np.nan))
 
         result = {
-            f"{color}_bin_centers": self._bin_centers(bins),
+            f"{color}_bin_centers": np.array([b.center for b in bins]),
             f"{color}_r_perp_avg": profile_r_perp(forward),
             f"{color}_avg": estimate.signal,
             f"{color}_err": estimate.signal_err,
@@ -1094,9 +1093,7 @@ class TreeCorrStacker:
     ) -> dict[str, np.ndarray]:
         if not self.diagnostic_plots:
             return {}
-        if mode not in self._diagnostic_cache:
-            self._diagnostic_cache[mode] = self._compute_diagnostic_arrays(mode, bins)
-        return self._diagnostic_cache[mode]
+        return self._compute_diagnostic_arrays(mode, bins)
 
     def _compute_diagnostic_arrays(
         self,
@@ -1138,7 +1135,7 @@ class TreeCorrStacker:
                 "diagnostic_color_bins",
             )
 
-        radial_edges = self._radial_edges_from_bins(bins)
+        radial_edges = np.array([bins[0].lo] + [b.hi for b in bins])
         counts = pair_weighted_histograms(
             foreground_vectors=self._unit_vectors(self.foreground),
             background_vectors=self._unit_vectors(self.background),
@@ -1150,7 +1147,7 @@ class TreeCorrStacker:
 
         result = {
             "diagnostic_radial_bin_edges": radial_edges,
-            "diagnostic_radial_bin_centers": self._bin_centers(bins),
+            "diagnostic_radial_bin_centers": np.array([b.center for b in bins]),
         }
         if "photoz" in counts:
             result.update(
@@ -1296,45 +1293,21 @@ class TreeCorrStacker:
 
     def _radial_bins(self) -> list[_RadialBin]:
         edges = np.asarray(self.r_bin_edges, dtype=float)
-        self._validate_radial_edges(edges, "r_bin_edges")
-        return self._radial_bins_from_edges(edges)
-
-    def _radial_bins_from_edges(self, edges: np.ndarray) -> list[_RadialBin]:
-        edges = np.asarray(edges, dtype=float)
-        self._validate_radial_edges(edges, "radial bin edges")
+        if edges.ndim != 1 or len(edges) < 2:
+            raise ValueError("r_bin_edges must contain at least two edges")
+        if np.any(edges <= 0) or np.any(np.diff(edges) <= 0):
+            raise ValueError("r_bin_edges must be positive and increasing")
+        # Bin centres are geometric, matching the log radial binning.
         return [
             _RadialBin(float(lo), float(hi), float(np.sqrt(lo * hi)))
             for lo, hi in zip(edges[:-1], edges[1:])
         ]
-
-    def _validate_radial_edges(self, edges: np.ndarray, label: str) -> None:
-        if edges.ndim != 1 or len(edges) < 2:
-            raise ValueError(f"{label} must contain at least two edges")
-        if np.any(edges <= 0) or np.any(np.diff(edges) <= 0):
-            raise ValueError(f"{label} must be positive and increasing")
-
-    def _radial_edges_from_bins(self, bins: list[_RadialBin]) -> np.ndarray:
-        if not bins:
-            return np.array([], dtype=float)
-        return np.array([bins[0].lo] + [radial_bin.hi for radial_bin in bins])
 
     def _reference_bin(self) -> _RadialBin:
         lo, hi = self.reference_annulus
         if lo <= 0 or hi <= lo:
             raise ValueError("reference_annulus must have max > min > 0")
         return _RadialBin(lo, hi, float(np.sqrt(lo * hi)))
-
-    def _nk(self, radial_bin: _RadialBin) -> Any:
-        return treecorr.NKCorrelation(**self._corr_kwargs(radial_bin))
-
-    def _nn(self, radial_bin: _RadialBin) -> Any:
-        return treecorr.NNCorrelation(**self._corr_kwargs(radial_bin))
-
-    def _nk_bins(self, radial_bins: list[_RadialBin]) -> Any:
-        return treecorr.NKCorrelation(**self._corr_kwargs_bins(radial_bins))
-
-    def _nn_bins(self, radial_bins: list[_RadialBin]) -> Any:
-        return treecorr.NNCorrelation(**self._corr_kwargs_bins(radial_bins))
 
     def _corr_kwargs(self, radial_bin: _RadialBin) -> dict[str, Any]:
         return {
@@ -1430,9 +1403,6 @@ class TreeCorrStacker:
         good = (weight != 0) & np.isfinite(value)
         out[good] = value[good]
         return out
-
-    def _bin_centers(self, bins: list[_RadialBin]) -> np.ndarray:
-        return np.array([radial_bin.center for radial_bin in bins])
 
 
 def run_treecorr_stack(

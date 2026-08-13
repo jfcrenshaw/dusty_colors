@@ -91,7 +91,9 @@ def stats_for_analysis(
             )
 
     foreground, background = _read_samples(sample_dir)
-    stack_config = _stack_config(resolved.analysis.data)
+    stack_config = resolved.analysis.data.get("stack", {})
+    if not isinstance(stack_config, Mapping):
+        raise ValueError("Analysis config 'stack' must be a mapping")
     final = _finalize_for_stacking(foreground, background, stack_config)
 
     healpix_nside = nside or _catalog_nside(resolved.catalog.data)
@@ -101,7 +103,7 @@ def stats_for_analysis(
         pixel_col=pixel_col,
         nside=healpix_nside,
     )
-    pixel_area = _healpix_pixel_area_deg2(healpix_nside)
+    pixel_area = FULL_SKY_DEG2 / _healpix_npix(healpix_nside)
     area = float(len(pixels) * pixel_area)
     if area <= 0:
         raise ValueError("Occupied HEALPix area is zero")
@@ -213,13 +215,6 @@ def _read_samples(sample_dir: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
         missing_names = ", ".join(str(path) for path in missing)
         raise FileNotFoundError(f"Prepared sample outputs are missing: {missing_names}")
     return pd.read_parquet(foreground_path), pd.read_parquet(background_path)
-
-
-def _stack_config(analysis_data: Mapping[str, Any]) -> Mapping[str, Any]:
-    stack_config = analysis_data.get("stack", {})
-    if not isinstance(stack_config, Mapping):
-        raise ValueError("Analysis config 'stack' must be a mapping")
-    return stack_config
 
 
 def _finalize_for_stacking(
@@ -349,10 +344,6 @@ def _healpix_npix(nside: int) -> int:
     if nside < 1:
         raise ValueError("HEALPix nside must be positive")
     return 12 * nside * nside
-
-
-def _healpix_pixel_area_deg2(nside: int) -> float:
-    return FULL_SKY_DEG2 / _healpix_npix(nside)
 
 
 @register("analysis_catalog_stats", per_mode=False)

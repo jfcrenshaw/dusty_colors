@@ -67,7 +67,12 @@ def load_resolved_config(
 
     sample_data = dict(sample_data)
     sample_data["catalog"] = catalog_id
-    analysis_data = _parse_analysis_arrays(dict(analysis_data))
+    # Expand declarative array specs (geomspace/linspace/logspace) into lists.
+    analysis_data = dict(analysis_data)
+    stack = dict(analysis_data.get("stack", {}))
+    if "r_bin_edges" in stack:
+        stack["r_bin_edges"] = parse_array_spec(stack["r_bin_edges"])
+    analysis_data["stack"] = stack
     analysis_data["sample"] = sample_id
 
     catalog = StageConfig(
@@ -211,14 +216,6 @@ def _deep_merge(base: dict[str, Any], override: Mapping[str, Any]) -> dict[str, 
         else:
             merged[key] = value
     return merged
-
-
-def _parse_analysis_arrays(data: dict[str, Any]) -> dict[str, Any]:
-    stack = dict(data.get("stack", {}))
-    if "r_bin_edges" in stack:
-        stack["r_bin_edges"] = parse_array_spec(stack["r_bin_edges"])
-    data["stack"] = stack
-    return data
 
 
 def _resolve_path(path: str | Path, base: Path) -> Path:
