@@ -87,7 +87,7 @@ The stage machinery is described in [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Reproducing the paper figures
 
-The figures are produced by three notebooks, which between them need eleven analyses on disk.
+The figures are produced by three notebooks, which between them need thirteen analyses on disk.
 
 The main measurement, the red/blue split, and the catalog-properties figures:
 
@@ -101,7 +101,7 @@ python scripts/run_stack.py configs/analyses/dp1_default_pai24.yaml
 The systematics variants, used only by the sensitivity figure:
 
 ```bash
-for v in uniform_random no_random no_flip smaller_ap larger_ap smaller_dz larger_dz; do
+for v in uniform_random no_random no_flip smaller_ap larger_ap smaller_dz larger_dz no_sv38 mcolors; do
     python scripts/run_stack.py "configs/analyses/dp1_${v}.yaml"
 done
 ```
@@ -117,7 +117,7 @@ Then run these notebooks, which write into `figures/`:
 | `fig_result_jackknife.pdf` | `plot_main_results.ipynb` | stack `dp1_default` |
 | `fig_result_colors.pdf` | `plot_main_results.ipynb` | stack `dp1_default` |
 | `fig_result_red_vs_blue.pdf` | `plot_main_results.ipynb` | stacks `dp1_red`, `dp1_blue` |
-| `fig_result_sensitivity.pdf` | `plot_main_results.ipynb` | the 7 systematics variants above |
+| `fig_result_sensitivity.pdf` | `plot_main_results.ipynb` | the 9 systematics variants above |
 | `fig_chromaticity.pdf` | `plot_wavelength_dependence.ipynb` | stack `dp1_default` |
 | `fig_r_band_stamp_grid.pdf` | `appendix/` (see below) | stack `dp1_default` |
 

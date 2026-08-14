@@ -506,7 +506,7 @@ def color_excess_to_av(
     rv: float = 3.1,
     wavelengths_um: Mapping[str, float] | None = None,
     foreground_redshift: float = 0.0,
-    law: str = "F99",
+    law: str = "G23",
 ) -> float | np.ndarray:
     """Convert ``E(X-Y)`` color excess in magnitudes to ``A_V``."""
 

@@ -1,0 +1,31 @@
+id: dp1_mcolors
+sample: configs/samples/dp1_default.yaml
+stack:
+  colors: [g-z, g-r, r-i, i-z]
+  # Magnitude-color cross-check of the default analysis: stack m1 - m2 directly
+  # instead of the flux ratio, so the estimator averages a log rather than
+  # logging an average. Everything else matches dp1_default.
+  modes: [mcolors]
+  r_bin_edges: [10, 15, 40, 120, 1000]
+  reference_annulus: [2000.0, 4000.0]
+  snr_max: 100
+  random_correction: true
+  random_multiplier: 100
+  random_weighting:
+    enabled: true
+    depth:
+      bands: [g, r, i, z]
+      fluxerr_template: cmodel_fluxerr_{band}
+      depth_sigma: 5
+    n_bins: 3
+  random_seed: 42
+  jackknife: true
+
+postrun:
+  dust_extinction_fit:
+    radial_pivot_kpc: 20.0
+    covariance: diagonal_errors
+    fixed_rv: 3.1
+  chromaticity:
+    radial_pivot_kpc: 20.0
+    fit_bin_indices: [0, 1, 2]
